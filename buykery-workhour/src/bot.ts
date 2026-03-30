@@ -124,12 +124,40 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     await replyHtml(ctx, buildStartMessage(current.mention, now, result.mode));
   });
 
+  bot.command("back", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current) {
+      return;
+    }
+
+    const now = new Date();
+    const result = startOrResumeShift(current.session.shift ? trimActiveAwayWindow(current.session.shift, now) : undefined, now);
+    current.session.shift = result.shift;
+    delete current.session.pendingManual;
+    current.session.updatedAt = now.toISOString();
+
+    await store.upsertSession(current.key, current.session);
+    await replyHtml(ctx, buildStartMessage(current.mention, now, result.mode));
+  });
+
   bot.command("stop", async (ctx) => {
     await handlePause(ctx, store, "break");
   });
 
   bot.command("lunch", async (ctx) => {
     await handlePause(ctx, store, "lunch");
+  });
+
+  bot.command("meeting", async (ctx) => {
+    await handlePause(ctx, store, "meeting");
+  });
+
+  bot.command("focus", async (ctx) => {
+    await handlePause(ctx, store, "focus");
+  });
+
+  bot.command("outside", async (ctx) => {
+    await handlePause(ctx, store, "outside");
   });
 
   bot.command("manual", async (ctx) => {

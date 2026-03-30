@@ -32,8 +32,12 @@ export function buildWelcomeMessage(mention: string): string {
     "그룹 채팅에서 아래 명령어로 근무 상태를 남길 수 있어요.",
     "",
     "• /start 근무 시작 또는 복귀",
+    "• /back 쉬는 상태에서 업무 복귀",
     "• /stop 잠깐 쉬는 중",
     "• /lunch 식사 중",
+    "• /meeting 회의 중",
+    "• /focus 집중 작업 중",
+    "• /outside 외근 중",
     "• /manual 시간대를 입력해서 부재 안내",
     "• /status 내 현재 상태 확인",
     "• /team 방 안의 현재 상태 보기",
@@ -49,11 +53,23 @@ export function buildHelpMessage(): string {
     "• /start",
     "근무 시작 또는 쉬는 상태에서 복귀해요.",
     "",
+    "• /back",
+    "쉬는 상태에서 복귀할 때 바로 쓰는 빠른 복귀 명령이에요.",
+    "",
     "• /stop",
     "짧은 휴식, 외근 준비, 잠깐 자리 비움 상태로 바꿔요.",
     "",
     "• /lunch",
     "점심이나 식사 시간을 기록해요.",
+    "",
+    "• /meeting",
+    "회의 중이라 바로 응답이 어려운 상태를 남겨요.",
+    "",
+    "• /focus",
+    "집중 작업 중이라 알림 확인이 늦을 수 있을 때 써요.",
+    "",
+    "• /outside",
+    "외근, 이동, 현장 대응처럼 자리 밖 업무일 때 써요.",
     "",
     "• /manual",
     "예: <code>15:00-16:30 병원 다녀올게요</code>",
@@ -83,6 +99,12 @@ function statusTone(status: WorkStatus): string {
       return "든든하게 먹고 다시 달릴게요.";
     case "manual":
       return "일정이 있어 잠시 자리를 비워요.";
+    case "meeting":
+      return "회의 중이라 답장이 조금 늦을 수 있어요.";
+    case "focus":
+      return "집중 작업 중이라 확인이 늦을 수 있어요.";
+    case "outside":
+      return "외부 일정 중이라 급한 용건은 전화가 좋아요.";
     default:
       return "상태를 업데이트했어요.";
   }

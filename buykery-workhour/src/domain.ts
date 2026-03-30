@@ -287,6 +287,12 @@ export function getStatusLabel(status: WorkStatus): string {
       return "식사 중";
     case "manual":
       return "일정상 부재";
+    case "meeting":
+      return "회의 중";
+    case "focus":
+      return "집중 작업 중";
+    case "outside":
+      return "외근 중";
     default:
       return "상태 확인 중";
   }
@@ -302,6 +308,12 @@ export function getStatusEmoji(status: WorkStatus): string {
       return "🍽️";
     case "manual":
       return "📅";
+    case "meeting":
+      return "🗓️";
+    case "focus":
+      return "🎧";
+    case "outside":
+      return "🚚";
     default:
       return "ℹ️";
   }

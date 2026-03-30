@@ -1,4 +1,4 @@
-export type WorkStatus = "working" | "break" | "lunch" | "manual";
+export type WorkStatus = "working" | "break" | "lunch" | "manual" | "meeting" | "focus" | "outside";
 
 export interface PauseRecord {
   status: Exclude<WorkStatus, "working">;
