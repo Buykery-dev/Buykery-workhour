@@ -5,6 +5,8 @@ import { createBot } from "./bot.js";
 import { startWeeklySummaryScheduler } from "./scheduler.js";
 import { FileStateStore } from "./storage.js";
 
+process.env.TZ = process.env.TZ ?? "Asia/Seoul";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 

@@ -16,6 +16,7 @@ export function createMention(userId: number, displayName: string): string {
 
 export function formatDateTime(date: Date): string {
   return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
