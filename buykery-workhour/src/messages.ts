@@ -1,5 +1,5 @@
 import { findOpenPause, formatDuration, getStatusEmoji, getStatusLabel, summarizeShift } from "./domain.js";
-import type { ParsedManualInput, ShiftSummary } from "./domain.js";
+import type { ParsedManualInput, ShiftSummary, WeeklyMemberSummary } from "./domain.js";
 import type { ShiftState, UserSession, WorkStatus } from "./types.js";
 
 function escapeHtml(value: string): string {
@@ -191,4 +191,25 @@ export function buildTeamStatusMessage(sessions: UserSession[], now: Date): stri
   });
 
   return ["👥 <b>Buykery 팀 상태 보드</b>", ...body].join("\n");
+}
+
+export function buildWeeklySummaryMessage(weekLabel: string, members: WeeklyMemberSummary[]): string {
+  if (members.length === 0) {
+    return [
+      `📊 <b>${weekLabel} 주간 근무 리포트</b>`,
+      "이번 주에 집계된 근무 기록이 아직 없어요."
+    ].join("\n");
+  }
+
+  const lines = members.map((member, index) => {
+    const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "•";
+    const name = createMention(member.userId, member.displayName);
+    return `${medal} ${name} : <b>${formatDuration(member.workedMs)}</b>`;
+  });
+
+  return [
+    `📊 <b>${weekLabel} 주간 근무 리포트</b>`,
+    "일요일 23:59 기준, 이번 주 총 근무시간이에요.",
+    ...lines
+  ].join("\n");
 }

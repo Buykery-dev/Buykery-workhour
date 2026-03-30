@@ -1,9 +1,49 @@
-import type { ManualAwayNote, PauseRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
+import type { CompletedShiftRecord, ManualAwayNote, PauseRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
 
 export interface ShiftSummary {
   totalElapsedMs: number;
   totalPausedMs: number;
   workedMs: number;
+}
+
+export interface WeeklyMemberSummary {
+  chatId: number;
+  userId: number;
+  displayName: string;
+  username?: string;
+  workedMs: number;
+}
+
+function intersectMs(startA: number, endA: number, startB: number, endB: number): number {
+  const start = Math.max(startA, startB);
+  const end = Math.min(endA, endB);
+  return Math.max(0, end - start);
+}
+
+export function calculateWorkedMsInRange(
+  startedAtIso: string,
+  endedAtIso: string,
+  pauses: PauseRecord[],
+  rangeStart: Date,
+  rangeEnd: Date
+): number {
+  const shiftStart = new Date(startedAtIso).getTime();
+  const shiftEnd = new Date(endedAtIso).getTime();
+  const rangeStartMs = rangeStart.getTime();
+  const rangeEndMs = rangeEnd.getTime();
+  const grossMs = intersectMs(shiftStart, shiftEnd, rangeStartMs, rangeEndMs);
+
+  if (grossMs === 0) {
+    return 0;
+  }
+
+  const pausedMs = pauses.reduce((sum, pause) => {
+    const pauseStart = new Date(pause.startedAt).getTime();
+    const pauseEnd = pause.endedAt ? new Date(pause.endedAt).getTime() : shiftEnd;
+    return sum + intersectMs(pauseStart, pauseEnd, rangeStartMs, rangeEndMs);
+  }, 0);
+
+  return Math.max(0, grossMs - pausedMs);
 }
 
 const MINUTE_MS = 60_000;
@@ -281,4 +321,126 @@ export function sortSessionsForTeamView(sessions: UserSession[]): UserSession[] 
 
 export function findOpenPause(shift: ShiftState): PauseRecord | undefined {
   return [...shift.pauses].reverse().find((pause) => !pause.endedAt);
+}
+
+function getSeoulDateParts(date: Date): { year: number; month: number; day: number; hour: number; minute: number; weekday: number } {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    weekday: "short"
+  });
+
+  const parts = formatter.formatToParts(date);
+  const map = Object.fromEntries(parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]));
+  const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour: Number(map.hour),
+    minute: Number(map.minute),
+    weekday: weekdayMap[map.weekday] ?? 0
+  };
+}
+
+function seoulDateKey(date: Date): string {
+  const parts = getSeoulDateParts(date);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+function startOfSeoulWeek(date: Date): Date {
+  const parts = getSeoulDateParts(date);
+  const daysFromMonday = (parts.weekday + 6) % 7;
+  const anchorUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0);
+  const startUtc = anchorUtc - daysFromMonday * 24 * 60 * 60 * 1000;
+  return new Date(startUtc);
+}
+
+export function getWeeklyReportContext(now: Date): {
+  shouldSend: boolean;
+  weekKey: string;
+  windowStart: Date;
+  windowEnd: Date;
+} {
+  const parts = getSeoulDateParts(now);
+  const shouldSend = parts.weekday === 0 && parts.hour === 23 && parts.minute === 59;
+  const windowStart = startOfSeoulWeek(now);
+  const windowEnd = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999));
+
+  return {
+    shouldSend,
+    weekKey: seoulDateKey(windowStart),
+    windowStart,
+    windowEnd
+  };
+}
+
+export function aggregateWeeklyTotals(
+  completedShifts: CompletedShiftRecord[],
+  sessions: UserSession[],
+  windowStart: Date,
+  windowEnd: Date
+): WeeklyMemberSummary[] {
+  const totals = new Map<string, WeeklyMemberSummary>();
+
+  const include = (chatId: number, userId: number, displayName: string, username: string | undefined, workedMs: number): void => {
+    if (workedMs <= 0) {
+      return;
+    }
+
+    const key = `${chatId}:${userId}`;
+    const current = totals.get(key);
+    if (current) {
+      current.workedMs += workedMs;
+      current.displayName = displayName;
+      current.username = username;
+      return;
+    }
+
+    totals.set(key, {
+      chatId,
+      userId,
+      displayName,
+      username,
+      workedMs
+    });
+  };
+
+  for (const record of completedShifts) {
+    const workedMs = calculateWorkedMsInRange(record.startedAt, record.endedAt, record.pauses, windowStart, windowEnd);
+    if (workedMs <= 0) {
+      continue;
+    }
+
+    include(record.chatId, record.userId, record.displayName, record.username, workedMs);
+  }
+
+  for (const session of sessions) {
+    if (!session.shift) {
+      continue;
+    }
+
+    const startedAt = new Date(session.shift.startedAt);
+    if (startedAt > windowEnd) {
+      continue;
+    }
+
+    const cappedNow = windowEnd < new Date() ? windowEnd : new Date();
+    const workedMs = calculateWorkedMsInRange(session.shift.startedAt, cappedNow.toISOString(), session.shift.pauses, windowStart, windowEnd);
+    include(session.chatId, session.userId, session.displayName, session.username, workedMs);
+  }
+
+  return [...totals.values()].sort((left, right) => {
+    if (right.workedMs !== left.workedMs) {
+      return right.workedMs - left.workedMs;
+    }
+
+    return left.displayName.localeCompare(right.displayName, "ko");
+  });
 }

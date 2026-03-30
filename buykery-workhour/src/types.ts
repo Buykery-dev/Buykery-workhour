@@ -38,6 +38,20 @@ export interface UserSession {
   updatedAt: string;
 }
 
+export interface CompletedShiftRecord {
+  chatId: number;
+  userId: number;
+  displayName: string;
+  username?: string;
+  startedAt: string;
+  endedAt: string;
+  workedMs: number;
+  pausedMs: number;
+  pauses: PauseRecord[];
+}
+
 export interface BotState {
   sessions: Record<string, UserSession>;
+  completedShifts: CompletedShiftRecord[];
+  weeklyReports: Record<string, string>;
 }

@@ -201,6 +201,17 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
 
+    await store.appendCompletedShift({
+      chatId: current.session.chatId,
+      userId: current.session.userId,
+      displayName: current.session.displayName,
+      username: current.session.username,
+      startedAt: result.shift?.startedAt ?? now.toISOString(),
+      endedAt: now.toISOString(),
+      workedMs: result.summary.workedMs,
+      pausedMs: result.summary.totalPausedMs,
+      pauses: result.shift?.pauses ?? []
+    });
     await store.upsertSession(current.key, current.session);
     await replyHtml(ctx, buildEndMessage(current.mention, result.summary));
   });

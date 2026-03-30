@@ -2,6 +2,7 @@ import "dotenv/config";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBot } from "./bot.js";
+import { startWeeklySummaryScheduler } from "./scheduler.js";
 import { FileStateStore } from "./storage.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -36,6 +37,10 @@ async function main(): Promise<void> {
   await bot.launch({
     dropPendingUpdates: true
   });
+
+  const weeklySummaryTimer = startWeeklySummaryScheduler(bot, store);
+  process.once("SIGINT", () => clearInterval(weeklySummaryTimer));
+  process.once("SIGTERM", () => clearInterval(weeklySummaryTimer));
 
   console.log(process.env.BOT_NAME ?? "Buykery 근태 텔레그램 봇", "is running");
 }
