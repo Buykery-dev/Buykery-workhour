@@ -1,13 +1,14 @@
-import { Telegraf } from "telegraf";
+import { Markup, Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import {
-  attachManualAwayNote,
+  addAwayWindow,
   createSessionKey,
   endShift,
   isManualInputReply,
   parseManualInput,
   setPausedStatus,
   sortSessionsForTeamView,
+  trimActiveAwayWindow,
   startOrResumeShift
 } from "./domain.js";
 import {
@@ -24,7 +25,7 @@ import {
   createMention
 } from "./messages.js";
 import { FileStateStore } from "./storage.js";
-import type { ManualAwayNote, UserSession, WorkStatus } from "./types.js";
+import type { AwayWindow, UserSession, WorkStatus } from "./types.js";
 
 function getDisplayName(ctx: Context): string {
   const firstName = ctx.from?.first_name ?? "팀원";
@@ -114,7 +115,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     }
 
     const now = new Date();
-    const result = startOrResumeShift(current.session.shift, now);
+    const result = startOrResumeShift(current.session.shift ? trimActiveAwayWindow(current.session.shift, now) : undefined, now);
     current.session.shift = result.shift;
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
@@ -144,10 +145,18 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
 
     const prompt = await ctx.reply(buildManualPrompt(current.mention), {
       parse_mode: "HTML",
-      reply_markup: {
-        force_reply: true,
-        input_field_placeholder: "예: 15:00-16:30 외근"
-      }
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback("30분", "manual:30"),
+          Markup.button.callback("1시간", "manual:60"),
+          Markup.button.callback("2시간", "manual:120")
+        ],
+        [
+          Markup.button.callback("3시간", "manual:180"),
+          Markup.button.callback("직접 입력", "manual:custom"),
+          Markup.button.callback("취소", "manual:cancel")
+        ]
+      ])
     });
 
     current.session.pendingManual = {
@@ -210,10 +219,72 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       endedAt: now.toISOString(),
       workedMs: result.summary.workedMs,
       pausedMs: result.summary.totalPausedMs,
-      pauses: result.shift?.pauses ?? []
+      pauses: result.shift?.pauses ?? [],
+      awayWindows: result.shift?.awayWindows ?? []
     });
     await store.upsertSession(current.key, current.session);
     await replyHtml(ctx, buildEndMessage(current.mention, result.summary));
+  });
+
+  bot.action(/^manual:(30|60|120|180)$/, async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current || !current.session.shift) {
+      await ctx.answerCbQuery("먼저 /start 로 근무를 시작해 주세요.");
+      return;
+    }
+
+    const now = new Date();
+    const minutes = Number(ctx.match[1]);
+    const to = new Date(now.getTime() + minutes * 60_000);
+    const awayWindow: AwayWindow = {
+      from: now.toISOString(),
+      to: to.toISOString(),
+      note: `${minutes}분 부재`,
+      createdAt: now.toISOString()
+    };
+
+    current.session.shift = addAwayWindow(current.session.shift, awayWindow);
+    current.session.updatedAt = now.toISOString();
+    await store.upsertSession(current.key, current.session);
+    await ctx.answerCbQuery(`${minutes}분 부재로 저장했어요.`);
+    await ctx.reply(buildManualSavedMessage(current.mention, { from: now, to, note: awayWindow.note }), {
+      parse_mode: "HTML"
+    });
+  });
+
+  bot.action("manual:custom", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current || !current.session.shift) {
+      await ctx.answerCbQuery("먼저 /start 로 근무를 시작해 주세요.");
+      return;
+    }
+
+    const prompt = await ctx.reply(buildManualPrompt(current.mention), {
+      parse_mode: "HTML",
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: "예: 15:00-16:30 외근"
+      }
+    });
+
+    current.session.pendingManual = {
+      promptMessageId: prompt.message_id,
+      createdAt: new Date().toISOString()
+    };
+    current.session.updatedAt = new Date().toISOString();
+    await store.upsertSession(current.key, current.session);
+    await ctx.answerCbQuery("답장 입력칸을 열어뒀어요.");
+  });
+
+  bot.action("manual:cancel", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (current) {
+      delete current.session.pendingManual;
+      current.session.updatedAt = new Date().toISOString();
+      await store.upsertSession(current.key, current.session);
+    }
+
+    await ctx.answerCbQuery("취소했어요.");
   });
 
   bot.on("text", async (ctx, next) => {
@@ -239,20 +310,14 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     }
 
     const now = new Date();
-    const pauseResult = setPausedStatus(current.session.shift, "manual", now, parsed.note);
-    if (!pauseResult.shift) {
-      await replyHtml(ctx, buildNoShiftMessage(current.mention));
-      return;
-    }
-
-    const manualNote: ManualAwayNote = {
+    const awayWindow: AwayWindow = {
       from: parsed.from.toISOString(),
       to: parsed.to.toISOString(),
       note: parsed.note,
       createdAt: now.toISOString()
     };
 
-    current.session.shift = attachManualAwayNote(pauseResult.shift, manualNote);
+    current.session.shift = addAwayWindow(current.session.shift, awayWindow);
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
 

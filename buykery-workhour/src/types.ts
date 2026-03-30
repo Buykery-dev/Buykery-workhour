@@ -14,6 +14,13 @@ export interface ManualAwayNote {
   createdAt: string;
 }
 
+export interface AwayWindow {
+  from: string;
+  to: string;
+  note?: string;
+  createdAt: string;
+}
+
 export interface ShiftState {
   startedAt: string;
   currentStatus: WorkStatus;
@@ -21,6 +28,7 @@ export interface ShiftState {
   totalPausedMs: number;
   pauses: PauseRecord[];
   manualAwayNote?: ManualAwayNote;
+  awayWindows: AwayWindow[];
 }
 
 export interface PendingManualInput {
@@ -48,6 +56,7 @@ export interface CompletedShiftRecord {
   workedMs: number;
   pausedMs: number;
   pauses: PauseRecord[];
+  awayWindows: AwayWindow[];
 }
 
 export interface BotState {

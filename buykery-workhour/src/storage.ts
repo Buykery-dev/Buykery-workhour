@@ -19,10 +19,24 @@ export class FileStateStore {
       const raw = await readFile(this.filePath, "utf-8");
       const parsed = JSON.parse(raw) as BotState;
       this.state = {
-        sessions: parsed.sessions ?? {},
+        sessions: Object.fromEntries(
+          Object.entries(parsed.sessions ?? {}).map(([key, session]) => [
+            key,
+            {
+              ...session,
+              shift: session.shift
+                ? {
+                    ...session.shift,
+                    awayWindows: session.shift.awayWindows ?? []
+                  }
+                : undefined
+            }
+          ])
+        ),
         completedShifts: (parsed.completedShifts ?? []).map((record) => ({
           ...record,
-          pauses: record.pauses ?? []
+          pauses: record.pauses ?? [],
+          awayWindows: record.awayWindows ?? []
         })),
         weeklyReports: parsed.weeklyReports ?? {}
       };

@@ -1,4 +1,4 @@
-import type { CompletedShiftRecord, ManualAwayNote, PauseRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
+import type { AwayWindow, CompletedShiftRecord, ManualAwayNote, PauseRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
 
 export interface ShiftSummary {
   totalElapsedMs: number;
@@ -24,6 +24,7 @@ export function calculateWorkedMsInRange(
   startedAtIso: string,
   endedAtIso: string,
   pauses: PauseRecord[],
+  awayWindows: AwayWindow[],
   rangeStart: Date,
   rangeEnd: Date
 ): number {
@@ -42,8 +43,11 @@ export function calculateWorkedMsInRange(
     const pauseEnd = pause.endedAt ? new Date(pause.endedAt).getTime() : shiftEnd;
     return sum + intersectMs(pauseStart, pauseEnd, rangeStartMs, rangeEndMs);
   }, 0);
+  const awayMs = awayWindows.reduce((sum, window) => {
+    return sum + intersectMs(new Date(window.from).getTime(), new Date(window.to).getTime(), rangeStartMs, rangeEndMs);
+  }, 0);
 
-  return Math.max(0, grossMs - pausedMs);
+  return Math.max(0, grossMs - pausedMs - awayMs);
 }
 
 const MINUTE_MS = 60_000;
@@ -52,7 +56,8 @@ function cloneShift(shift: ShiftState): ShiftState {
   return {
     ...shift,
     pauses: shift.pauses.map((pause) => ({ ...pause })),
-    manualAwayNote: shift.manualAwayNote ? { ...shift.manualAwayNote } : undefined
+    manualAwayNote: shift.manualAwayNote ? { ...shift.manualAwayNote } : undefined,
+    awayWindows: shift.awayWindows.map((window) => ({ ...window }))
   };
 }
 
@@ -65,7 +70,8 @@ export function createShift(now: Date): ShiftState {
     startedAt: now.toISOString(),
     currentStatus: "working",
     totalPausedMs: 0,
-    pauses: []
+    pauses: [],
+    awayWindows: []
   };
 }
 
@@ -153,12 +159,79 @@ export function attachManualAwayNote(shift: ShiftState, manualAwayNote: ManualAw
   };
 }
 
+export function addAwayWindow(shift: ShiftState, awayWindow: AwayWindow): ShiftState {
+  const next = cloneShift(shift);
+  next.awayWindows.push({ ...awayWindow });
+  next.awayWindows.sort((left, right) => new Date(left.from).getTime() - new Date(right.from).getTime());
+  next.manualAwayNote = {
+    from: awayWindow.from,
+    to: awayWindow.to,
+    note: awayWindow.note,
+    createdAt: awayWindow.createdAt
+  };
+  return next;
+}
+
+export function trimActiveAwayWindow(shift: ShiftState, now: Date): ShiftState {
+  const next = cloneShift(shift);
+  const nowMs = now.getTime();
+
+  next.awayWindows = next.awayWindows.map((window) => {
+    const from = new Date(window.from).getTime();
+    const to = new Date(window.to).getTime();
+
+    if (from <= nowMs && nowMs < to) {
+      return {
+        ...window,
+        to: now.toISOString()
+      };
+    }
+
+    return window;
+  });
+
+  const upcoming = next.awayWindows.find((window) => new Date(window.to).getTime() > nowMs);
+  next.manualAwayNote = upcoming
+    ? {
+        from: upcoming.from,
+        to: upcoming.to,
+        note: upcoming.note,
+        createdAt: upcoming.createdAt
+      }
+    : undefined;
+
+  return next;
+}
+
+function calculateExcludedMsInRange(
+  startedAtIso: string,
+  endedAtIso: string,
+  pauses: PauseRecord[],
+  awayWindows: AwayWindow[],
+  rangeStart: Date,
+  rangeEnd: Date
+): number {
+  const grossMs = intersectMs(
+    new Date(startedAtIso).getTime(),
+    new Date(endedAtIso).getTime(),
+    rangeStart.getTime(),
+    rangeEnd.getTime()
+  );
+  const workedMs = calculateWorkedMsInRange(startedAtIso, endedAtIso, pauses, awayWindows, rangeStart, rangeEnd);
+  return Math.max(0, grossMs - workedMs);
+}
+
 export function summarizeShift(shift: ShiftState, now: Date): ShiftSummary {
-  const startedAt = new Date(shift.startedAt).getTime();
-  const currentPauseMs = shift.pauseStartedAt ? Math.max(0, now.getTime() - new Date(shift.pauseStartedAt).getTime()) : 0;
-  const totalElapsedMs = Math.max(0, now.getTime() - startedAt);
-  const totalPausedMs = shift.totalPausedMs + currentPauseMs;
-  const workedMs = Math.max(0, totalElapsedMs - totalPausedMs);
+  const totalElapsedMs = Math.max(0, now.getTime() - new Date(shift.startedAt).getTime());
+  const workedMs = calculateWorkedMsInRange(shift.startedAt, now.toISOString(), shift.pauses, shift.awayWindows, new Date(shift.startedAt), now);
+  const totalPausedMs = calculateExcludedMsInRange(
+    shift.startedAt,
+    now.toISOString(),
+    shift.pauses,
+    shift.awayWindows,
+    new Date(shift.startedAt),
+    now
+  );
 
   return {
     totalElapsedMs,
@@ -232,6 +305,19 @@ export function getStatusEmoji(status: WorkStatus): string {
     default:
       return "ℹ️";
   }
+}
+
+export function getActiveAwayWindow(shift: ShiftState, now: Date): AwayWindow | undefined {
+  const nowMs = now.getTime();
+  return shift.awayWindows.find((window) => {
+    const from = new Date(window.from).getTime();
+    const to = new Date(window.to).getTime();
+    return from <= nowMs && nowMs < to;
+  });
+}
+
+export function getEffectiveStatus(shift: ShiftState, now: Date): WorkStatus {
+  return getActiveAwayWindow(shift, now) ? "manual" : shift.currentStatus;
 }
 
 export function isManualInputReply(session: UserSession, replyToMessageId?: number): boolean {
@@ -413,7 +499,7 @@ export function aggregateWeeklyTotals(
   };
 
   for (const record of completedShifts) {
-    const workedMs = calculateWorkedMsInRange(record.startedAt, record.endedAt, record.pauses, windowStart, windowEnd);
+    const workedMs = calculateWorkedMsInRange(record.startedAt, record.endedAt, record.pauses, record.awayWindows, windowStart, windowEnd);
     if (workedMs <= 0) {
       continue;
     }
@@ -432,7 +518,14 @@ export function aggregateWeeklyTotals(
     }
 
     const cappedNow = windowEnd < new Date() ? windowEnd : new Date();
-    const workedMs = calculateWorkedMsInRange(session.shift.startedAt, cappedNow.toISOString(), session.shift.pauses, windowStart, windowEnd);
+    const workedMs = calculateWorkedMsInRange(
+      session.shift.startedAt,
+      cappedNow.toISOString(),
+      session.shift.pauses,
+      session.shift.awayWindows,
+      windowStart,
+      windowEnd
+    );
     include(session.chatId, session.userId, session.displayName, session.username, workedMs);
   }
 

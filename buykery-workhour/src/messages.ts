@@ -1,4 +1,4 @@
-import { findOpenPause, formatDuration, getStatusEmoji, getStatusLabel, summarizeShift } from "./domain.js";
+import { findOpenPause, formatDuration, getActiveAwayWindow, getEffectiveStatus, getStatusEmoji, getStatusLabel, summarizeShift } from "./domain.js";
 import type { ParsedManualInput, ShiftSummary, WeeklyMemberSummary } from "./domain.js";
 import type { ShiftState, UserSession, WorkStatus } from "./types.js";
 
@@ -120,15 +120,19 @@ export function buildEndMessage(mention: string, summary: ShiftSummary): string 
 export function buildStatusMessage(mention: string, shift: ShiftState, now: Date): string {
   const summary = summarizeShift(shift, now);
   const openPause = findOpenPause(shift);
+  const effectiveStatus = getEffectiveStatus(shift, now);
+  const activeAwayWindow = getActiveAwayWindow(shift, now);
   const noteLine =
-    shift.currentStatus === "manual" && shift.manualAwayNote
-      ? `• 부재 안내: ${formatDateTime(new Date(shift.manualAwayNote.from))} ~ ${formatDateTime(new Date(shift.manualAwayNote.to))}${shift.manualAwayNote.note ? ` (${escapeHtml(shift.manualAwayNote.note)})` : ""}`
+    activeAwayWindow
+      ? `• 부재 안내: ${formatDateTime(new Date(activeAwayWindow.from))} ~ ${formatDateTime(new Date(activeAwayWindow.to))}${activeAwayWindow.note ? ` (${escapeHtml(activeAwayWindow.note)})` : ""}`
+      : shift.manualAwayNote
+        ? `• 다음 부재: ${formatDateTime(new Date(shift.manualAwayNote.from))} ~ ${formatDateTime(new Date(shift.manualAwayNote.to))}${shift.manualAwayNote.note ? ` (${escapeHtml(shift.manualAwayNote.note)})` : ""}`
       : openPause?.note
         ? `• 메모: ${escapeHtml(openPause.note)}`
         : undefined;
 
   const lines = [
-    `${getStatusEmoji(shift.currentStatus)} ${mention} 현재 상태는 <b>${getStatusLabel(shift.currentStatus)}</b>이에요.`,
+    `${getStatusEmoji(effectiveStatus)} ${mention} 현재 상태는 <b>${getStatusLabel(effectiveStatus)}</b>이에요.`,
     `• 시작 시각: ${formatDateTime(new Date(shift.startedAt))}`,
     `• 누적 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`,
     `• 누적 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`
@@ -149,18 +153,20 @@ export function buildManualPrompt(mention: string): string {
   return [
     `📅 ${mention} 부재 시간을 입력해 주세요.`,
     "",
-    "아래 형식 중 하나로 이 메시지에 답장하면 돼요.",
+    "버튼으로 빠르게 고르거나, 아래 형식 중 하나로 답장하면 돼요.",
     "• <code>15:00-16:30 병원 다녀올게요</code>",
     "• <code>2026-03-30 15:00 - 2026-03-30 17:00 외근</code>",
     "",
-    "입력하면 봇이 팀원들에게 자연스럽게 공지해 줄게요."
+    "입력한 시간대는 근무시간 계산에서 자동으로 제외돼요."
   ].join("\n");
 }
 
 export function buildManualSavedMessage(mention: string, parsed: ParsedManualInput): string {
   const noteSuffix = parsed.note ? `\n• 메모: ${escapeHtml(parsed.note)}` : "";
+  const tone = parsed.from.getTime() <= Date.now() ? "이 시간대는 근무시간에서 자동 제외할게요." : "예정된 부재 시간으로 저장해 둘게요.";
   return [
     `📅 ${mention} ${formatDateTime(parsed.from)}부터 ${formatDateTime(parsed.to)}까지 부재중입니다.`,
+    tone,
     "긴급한 경우 전화로 부탁드려요.",
     noteSuffix
   ]
@@ -187,7 +193,8 @@ export function buildTeamStatusMessage(sessions: UserSession[], now: Date): stri
     }
 
     const summary = summarizeShift(session.shift, now);
-    return `• ${getStatusEmoji(session.shift.currentStatus)} ${mention} : ${getStatusLabel(session.shift.currentStatus)} / ${formatDuration(summary.workedMs)}`;
+    const effectiveStatus = getEffectiveStatus(session.shift, now);
+    return `• ${getStatusEmoji(effectiveStatus)} ${mention} : ${getStatusLabel(effectiveStatus)} / ${formatDuration(summary.workedMs)}`;
   });
 
   return ["👥 <b>Buykery 팀 상태 보드</b>", ...body].join("\n");

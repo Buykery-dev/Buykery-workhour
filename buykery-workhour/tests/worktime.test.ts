@@ -55,7 +55,8 @@ test("weekly totals aggregate completed and active shifts", () => {
         endedAt: "2026-03-25T09:00:00.000Z",
         workedMs: 3 * 60 * 60 * 1000,
         pausedMs: 0,
-        pauses: []
+        pauses: [],
+        awayWindows: []
       }
     ],
     [
@@ -68,7 +69,8 @@ test("weekly totals aggregate completed and active shifts", () => {
           startedAt: "2026-03-29T00:00:00.000Z",
           currentStatus: "working",
           totalPausedMs: 0,
-          pauses: []
+          pauses: [],
+          awayWindows: []
         }
       }
     ],
@@ -93,9 +95,30 @@ test("worked time in range excludes pauses and clips by window", () => {
         endedAt: "2026-03-23T01:30:00.000Z"
       }
     ],
+    [],
     new Date("2026-03-23T00:00:00.000Z"),
     new Date("2026-03-23T02:00:00.000Z")
   );
 
   assert.equal(workedMs, 90 * 60 * 1000);
+});
+
+test("worked time in range excludes manual away windows", () => {
+  const workedMs = calculateWorkedMsInRange(
+    "2026-03-23T00:00:00.000Z",
+    "2026-03-23T04:00:00.000Z",
+    [],
+    [
+      {
+        from: "2026-03-23T01:00:00.000Z",
+        to: "2026-03-23T02:30:00.000Z",
+        note: "병원",
+        createdAt: "2026-03-23T00:30:00.000Z"
+      }
+    ],
+    new Date("2026-03-23T00:00:00.000Z"),
+    new Date("2026-03-23T04:00:00.000Z")
+  );
+
+  assert.equal(workedMs, 150 * 60 * 1000);
 });
