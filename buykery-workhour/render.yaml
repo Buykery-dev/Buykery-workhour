@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: buykery-workhour
+    runtime: node
+    plan: starter
+    rootDir: buykery-workhour
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: BOT_NAME
+        value: Buykery 근태 텔레그램 봇
+      - key: BOT_USERNAME
+        value: whereIamnow_bot
