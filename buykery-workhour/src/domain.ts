@@ -18,6 +18,7 @@ export interface ManualEditPayload {
   dateKey: string;
   startedAt: string;
   endedAt: string;
+  pausedMs: number;
   workedMs: number;
 }
 
@@ -100,11 +101,42 @@ export function buildSeoulIso(dateKey: string, timeText: string): string {
 }
 
 export function buildManualEditPayload(dateKey: string, startTime: string, endTime: string): ManualEditPayload | undefined {
+  return buildManualEditPayloadWithBreak(dateKey, startTime, endTime, 0);
+}
+
+export function parseBreakMinutesInput(input: string): number | undefined {
+  const trimmed = input.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return Number(trimmed);
+  }
+
+  const timeMatch = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (!timeMatch) {
+    return undefined;
+  }
+
+  const hours = Number(timeMatch[1]);
+  const minutes = Number(timeMatch[2]);
+  if (minutes > 59) {
+    return undefined;
+  }
+
+  return hours * 60 + minutes;
+}
+
+export function buildManualEditPayloadWithBreak(
+  dateKey: string,
+  startTime: string,
+  endTime: string,
+  breakMinutes: number
+): ManualEditPayload | undefined {
   const startedAt = buildSeoulIso(dateKey, startTime);
   const endedAt = buildSeoulIso(dateKey, endTime);
-  const workedMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+  const grossMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+  const pausedMs = breakMinutes * MINUTE_MS;
+  const workedMs = grossMs - pausedMs;
 
-  if (workedMs <= 0) {
+  if (grossMs <= 0 || workedMs < 0) {
     return undefined;
   }
 
@@ -112,6 +144,7 @@ export function buildManualEditPayload(dateKey: string, startTime: string, endTi
     dateKey,
     startedAt,
     endedAt,
+    pausedMs,
     workedMs
   };
 }

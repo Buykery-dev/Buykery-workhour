@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {
   aggregateWeeklyTotals,
   buildManualEditPayload,
+  buildManualEditPayloadWithBreak,
   calculateWorkedMsInRange,
   createShift,
   endShift,
   getWeeklyReportContext,
+  parseBreakMinutesInput,
   parseClockTime,
   parseEditDateInput,
   parseManualInput,
@@ -145,4 +147,12 @@ test("manual edit payload builds work duration", () => {
   const payload = buildManualEditPayload("2026-04-02", "09:00", "18:30");
   assert.ok(payload);
   assert.equal(payload?.workedMs, 9.5 * 60 * 60 * 1000);
+});
+
+test("manual edit payload applies break minutes", () => {
+  assert.equal(parseBreakMinutesInput("1:30"), 90);
+  const payload = buildManualEditPayloadWithBreak("2026-04-02", "09:00", "18:30", 90);
+  assert.ok(payload);
+  assert.equal(payload?.pausedMs, 90 * 60 * 1000);
+  assert.equal(payload?.workedMs, 8 * 60 * 60 * 1000);
 });

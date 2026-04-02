@@ -2,12 +2,13 @@ import { Markup, Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import {
   addAwayWindow,
-  buildManualEditPayload,
+  buildManualEditPayloadWithBreak,
   createSessionKey,
   endShift,
   formatDuration,
   getSeoulDateKey,
   isManualInputReply,
+  parseBreakMinutesInput,
   parseClockTime,
   parseEditDateInput,
   parseManualInput,
@@ -17,6 +18,7 @@ import {
   startOrResumeShift
 } from "./domain.js";
 import {
+  buildEditBreakPrompt,
   buildEditDatePrompt,
   buildEditEndPrompt,
   buildEditParseError,
@@ -73,11 +75,11 @@ function getSessionFromContext(ctx: Context, store: FileStateStore): { key: stri
 }
 
 function recentDateOptions(now: Date): Array<{ label: string; value: string }> {
-  return [0, 1, 2].map((offset) => {
+  return [0, 1, 2, 3, 4, 5, 6].map((offset) => {
     const date = new Date(now);
     date.setDate(date.getDate() - offset);
     return {
-      label: offset === 0 ? "오늘" : offset === 1 ? "어제" : `${offset}일 전`,
+      label: offset === 0 ? "오늘" : offset === 1 ? "어제" : `${date.getMonth() + 1}/${date.getDate()}`,
       value: getSeoulDateKey(date)
     };
   });
@@ -228,7 +230,8 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     const prompt = await ctx.reply(buildEditDatePrompt(current.mention), {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
-        dateButtons.map((option) => Markup.button.callback(option.label, `edit:date:${option.value}`)),
+        dateButtons.slice(0, 4).map((option) => Markup.button.callback(option.label, `edit:date:${option.value}`)),
+        dateButtons.slice(4).map((option) => Markup.button.callback(option.label, `edit:date:${option.value}`)),
         [Markup.button.callback("직접 입력", "edit:date:custom"), Markup.button.callback("취소", "edit:cancel")]
       ])
     });
@@ -418,6 +421,98 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     await ctx.answerCbQuery("수정을 취소했어요.");
   });
 
+  bot.action(/^edit:break:(0|30|60|90)$/, async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current || !current.session.pendingEdit?.selectedDate || !current.session.pendingEdit.startTime || !current.session.pendingEdit.endTime) {
+      await ctx.answerCbQuery("수정 흐름을 다시 시작해 주세요.");
+      return;
+    }
+
+    const breakMinutes = Number(ctx.match[1]);
+    const payload = buildManualEditPayloadWithBreak(
+      current.session.pendingEdit.selectedDate,
+      current.session.pendingEdit.startTime,
+      current.session.pendingEdit.endTime,
+      breakMinutes
+    );
+
+    if (!payload) {
+      await ctx.answerCbQuery("휴게 시간이 너무 길어요.");
+      return;
+    }
+
+    const nextRecord: CompletedShiftRecord = {
+      chatId: current.session.chatId,
+      userId: current.session.userId,
+      displayName: current.session.displayName,
+      username: current.session.username,
+      startedAt: payload.startedAt,
+      endedAt: payload.endedAt,
+      workedMs: payload.workedMs,
+      pausedMs: payload.pausedMs,
+      pauses: [],
+      awayWindows: []
+    };
+
+    await store.upsertCompletedShift(
+      (record) =>
+        record.chatId === current.session.chatId &&
+        record.userId === current.session.userId &&
+        getSeoulDateKey(new Date(record.startedAt)) === payload.dateKey,
+      nextRecord
+    );
+
+    delete current.session.pendingEdit;
+    current.session.updatedAt = new Date().toISOString();
+    await store.upsertSession(current.key, current.session);
+    await ctx.answerCbQuery("휴게 시간까지 반영했어요.");
+    await replyHtml(
+      ctx,
+      buildEditSavedMessage(
+        current.mention,
+        payload.dateKey,
+        nextRecord.startedAt.slice(11, 16),
+        nextRecord.endedAt.slice(11, 16),
+        formatDuration(payload.pausedMs),
+        formatDuration(payload.workedMs)
+      )
+    );
+  });
+
+  bot.action("edit:break:custom", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current || !current.session.pendingEdit?.selectedDate || !current.session.pendingEdit.startTime || !current.session.pendingEdit.endTime) {
+      await ctx.answerCbQuery("수정 흐름을 다시 시작해 주세요.");
+      return;
+    }
+
+    const prompt = await ctx.reply(
+      buildEditBreakPrompt(
+        current.mention,
+        current.session.pendingEdit.selectedDate,
+        current.session.pendingEdit.startTime,
+        current.session.pendingEdit.endTime
+      ),
+      {
+        parse_mode: "HTML",
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: "예: 30 또는 1:30"
+        }
+      }
+    );
+
+    current.session.pendingEdit = {
+      ...current.session.pendingEdit,
+      step: "break",
+      promptMessageId: prompt.message_id,
+      createdAt: new Date().toISOString()
+    };
+    current.session.updatedAt = new Date().toISOString();
+    await store.upsertSession(current.key, current.session);
+    await ctx.answerCbQuery("휴게 시간 입력칸을 열어뒀어요.");
+  });
+
   bot.on("text", async (ctx, next) => {
     const current = getSessionFromContext(ctx, store);
     if (!current) {
@@ -482,15 +577,57 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
         return;
       }
 
-      const endTime = parseClockTime(ctx.message.text);
-      if (!endTime || !pendingEdit.selectedDate || !pendingEdit.startTime) {
+      if (pendingEdit.step === "end") {
+        const endTime = parseClockTime(ctx.message.text);
+        if (!endTime || !pendingEdit.selectedDate || !pendingEdit.startTime) {
+          await replyHtml(ctx, buildEditParseError(current.mention, "time"));
+          return;
+        }
+
+        const payload = buildManualEditPayloadWithBreak(pendingEdit.selectedDate, pendingEdit.startTime, endTime, 0);
+        if (!payload) {
+          await replyHtml(ctx, `⚠️ ${current.mention} 퇴근 시간은 출근 시간보다 늦어야 해요.`);
+          return;
+        }
+
+        const prompt = await ctx.reply(buildEditBreakPrompt(current.mention, pendingEdit.selectedDate, pendingEdit.startTime, endTime), {
+          parse_mode: "HTML",
+          ...Markup.inlineKeyboard([
+            [
+              Markup.button.callback("0분", "edit:break:0"),
+              Markup.button.callback("30분", "edit:break:30"),
+              Markup.button.callback("1시간", "edit:break:60")
+            ],
+            [
+              Markup.button.callback("1시간 30분", "edit:break:90"),
+              Markup.button.callback("직접 입력", "edit:break:custom"),
+              Markup.button.callback("취소", "edit:cancel")
+            ]
+          ])
+        });
+
+        current.session.pendingEdit = {
+          step: "break",
+          promptMessageId: prompt.message_id,
+          createdAt: now.toISOString(),
+          selectedDate: pendingEdit.selectedDate,
+          startTime: pendingEdit.startTime,
+          endTime
+        };
+        current.session.updatedAt = now.toISOString();
+        await store.upsertSession(current.key, current.session);
+        return;
+      }
+
+      const breakMinutes = parseBreakMinutesInput(ctx.message.text);
+      if (breakMinutes === undefined || !pendingEdit.selectedDate || !pendingEdit.startTime || !pendingEdit.endTime) {
         await replyHtml(ctx, buildEditParseError(current.mention, "time"));
         return;
       }
 
-      const payload = buildManualEditPayload(pendingEdit.selectedDate, pendingEdit.startTime, endTime);
+      const payload = buildManualEditPayloadWithBreak(pendingEdit.selectedDate, pendingEdit.startTime, pendingEdit.endTime, breakMinutes);
       if (!payload) {
-        await replyHtml(ctx, `⚠️ ${current.mention} 퇴근 시간은 출근 시간보다 늦어야 해요.`);
+        await replyHtml(ctx, `⚠️ ${current.mention} 휴게 시간이 전체 근무시간보다 길 수는 없어요.`);
         return;
       }
 
@@ -502,7 +639,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
         startedAt: payload.startedAt,
         endedAt: payload.endedAt,
         workedMs: payload.workedMs,
-        pausedMs: 0,
+        pausedMs: payload.pausedMs,
         pauses: [],
         awayWindows: []
       };
@@ -520,7 +657,14 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       await store.upsertSession(current.key, current.session);
       await replyHtml(
         ctx,
-        buildEditSavedMessage(current.mention, payload.dateKey, pendingEdit.startTime, endTime, formatDuration(payload.workedMs))
+        buildEditSavedMessage(
+          current.mention,
+          payload.dateKey,
+          pendingEdit.startTime,
+          pendingEdit.endTime,
+          formatDuration(payload.pausedMs),
+          formatDuration(payload.workedMs)
+        )
       );
       return;
     }

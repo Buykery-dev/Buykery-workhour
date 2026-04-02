@@ -78,7 +78,7 @@ export function buildHelpMessage(): string {
     "봇이 답장 입력창을 띄우면 시간대를 적어 주세요.",
     "",
     "• /edit",
-    "날짜를 고른 뒤 출근/퇴근 시간을 직접 수정해요.",
+    "날짜를 고른 뒤 출근/퇴근/휴게 시간을 직접 수정해요.",
     "",
     "• /status",
     "내 현재 근무 상태와 누적 근무 시간을 보여줘요.",
@@ -231,11 +231,29 @@ export function buildEditEndPrompt(mention: string, dateKey: string, startTime: 
   ].join("\n");
 }
 
-export function buildEditSavedMessage(mention: string, dateKey: string, startTime: string, endTime: string, workedLabel: string): string {
+export function buildEditBreakPrompt(mention: string, dateKey: string, startTime: string, endTime: string): string {
+  return [
+    `☕ ${mention} <b>${dateKey}</b>의 총 휴게 시간을 입력해 주세요.`,
+    `• 출근: ${startTime}`,
+    `• 퇴근: ${endTime}`,
+    "",
+    "버튼으로 빠르게 고르거나 <code>30</code>, <code>90</code>, <code>1:30</code> 형식으로 답장할 수 있어요."
+  ].join("\n");
+}
+
+export function buildEditSavedMessage(
+  mention: string,
+  dateKey: string,
+  startTime: string,
+  endTime: string,
+  breakLabel: string,
+  workedLabel: string
+): string {
   return [
     `✅ ${mention} <b>${dateKey}</b> 근무 시간을 수정했어요.`,
     `• 출근: ${startTime}`,
     `• 퇴근: ${endTime}`,
+    `• 휴게: ${breakLabel}`,
     `• 총 근무 시간: <b>${workedLabel}</b>`,
     "이 수동 수정은 해당 날짜 기록을 기준으로 다시 계산해요."
   ].join("\n");

@@ -37,11 +37,12 @@ export interface PendingManualInput {
 }
 
 export interface PendingEditInput {
-  step: "date" | "start" | "end";
+  step: "date" | "start" | "end" | "break";
   promptMessageId: number;
   createdAt: string;
   selectedDate?: string;
   startTime?: string;
+  endTime?: string;
 }
 
 export interface UserSession {
