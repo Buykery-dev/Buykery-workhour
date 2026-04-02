@@ -608,14 +608,17 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
 
         const prompt = await ctx.reply(buildEditEndPrompt(current.mention, pendingEdit.selectedDate, startTime), {
           parse_mode: "HTML",
-          ...(isTodayDateKey(pendingEdit.selectedDate, now)
-            ? Markup.inlineKeyboard([[Markup.button.callback("현재 근무 중", "edit:end:ongoing")]])
-            : {}),
           reply_markup: {
             force_reply: true,
             input_field_placeholder: "예: 18:30"
           }
         });
+
+        if (isTodayDateKey(pendingEdit.selectedDate, now)) {
+          await ctx.reply("퇴근 전이면 아래 버튼으로 현재 근무 중 상태로 저장할 수 있어요.", {
+            ...Markup.inlineKeyboard([[Markup.button.callback("현재 근무 중", "edit:end:ongoing")]])
+          });
+        }
 
         current.session.pendingEdit = {
           step: "end",
