@@ -105,6 +105,11 @@ export class FileStateStore {
     await this.save();
   }
 
+  async deleteCompletedShifts(matcher: (record: CompletedShiftRecord) => boolean): Promise<void> {
+    this.state.completedShifts = this.state.completedShifts.filter((record) => !matcher(record));
+    await this.save();
+  }
+
   getWeeklyReportMarker(chatId: number, weekKey: string): string | undefined {
     return this.state.weeklyReports[`${chatId}:${weekKey}`];
   }

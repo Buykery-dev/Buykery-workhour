@@ -21,6 +21,7 @@ import {
   buildEditBreakPrompt,
   buildEditDatePrompt,
   buildEditEndPrompt,
+  buildEditOngoingSavedMessage,
   buildEditParseError,
   buildEditSavedMessage,
   buildEditStartPrompt,
@@ -37,7 +38,7 @@ import {
   createMention
 } from "./messages.js";
 import { FileStateStore } from "./storage.js";
-import type { AwayWindow, CompletedShiftRecord, UserSession, WorkStatus } from "./types.js";
+import type { AwayWindow, CompletedShiftRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
 
 function getDisplayName(ctx: Context): string {
   const firstName = ctx.from?.first_name ?? "팀원";
@@ -83,6 +84,20 @@ function recentDateOptions(now: Date): Array<{ label: string; value: string }> {
       value: getSeoulDateKey(date)
     };
   });
+}
+
+function isTodayDateKey(dateKey: string, now: Date): boolean {
+  return dateKey === getSeoulDateKey(now);
+}
+
+function createActiveShiftFromEdit(startedAt: string): ShiftState {
+  return {
+    startedAt,
+    currentStatus: "working",
+    totalPausedMs: 0,
+    pauses: [],
+    awayWindows: []
+  };
 }
 
 async function replyHtml(ctx: Context, html: string): Promise<void> {
@@ -421,6 +436,40 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     await ctx.answerCbQuery("수정을 취소했어요.");
   });
 
+  bot.action("edit:end:ongoing", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current || !current.session.pendingEdit?.selectedDate || !current.session.pendingEdit.startTime) {
+      await ctx.answerCbQuery("수정 흐름을 다시 시작해 주세요.");
+      return;
+    }
+
+    const { selectedDate, startTime } = current.session.pendingEdit;
+    if (!selectedDate || !startTime) {
+      await ctx.answerCbQuery("수정 흐름을 다시 시작해 주세요.");
+      return;
+    }
+
+    if (!isTodayDateKey(selectedDate, new Date())) {
+      await ctx.answerCbQuery("오늘 날짜에서만 사용할 수 있어요.");
+      return;
+    }
+
+    const startedAt = `${selectedDate}T${startTime}:00+09:00`;
+    current.session.shift = createActiveShiftFromEdit(startedAt);
+    delete current.session.pendingEdit;
+    current.session.updatedAt = new Date().toISOString();
+
+    await store.deleteCompletedShifts(
+      (record) =>
+        record.chatId === current.session.chatId &&
+        record.userId === current.session.userId &&
+        getSeoulDateKey(new Date(record.startedAt)) === selectedDate
+    );
+    await store.upsertSession(current.key, current.session);
+    await ctx.answerCbQuery("현재 근무 중 상태로 저장했어요.");
+    await replyHtml(ctx, buildEditOngoingSavedMessage(current.mention, selectedDate, startTime));
+  });
+
   bot.action(/^edit:break:(0|30|60|90)$/, async (ctx) => {
     const current = getSessionFromContext(ctx, store);
     if (!current || !current.session.pendingEdit?.selectedDate || !current.session.pendingEdit.startTime || !current.session.pendingEdit.endTime) {
@@ -559,6 +608,9 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
 
         const prompt = await ctx.reply(buildEditEndPrompt(current.mention, pendingEdit.selectedDate, startTime), {
           parse_mode: "HTML",
+          ...(isTodayDateKey(pendingEdit.selectedDate, now)
+            ? Markup.inlineKeyboard([[Markup.button.callback("현재 근무 중", "edit:end:ongoing")]])
+            : {}),
           reply_markup: {
             force_reply: true,
             input_field_placeholder: "예: 18:30"

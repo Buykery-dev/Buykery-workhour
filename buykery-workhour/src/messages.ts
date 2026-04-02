@@ -227,7 +227,8 @@ export function buildEditEndPrompt(mention: string, dateKey: string, startTime: 
   return [
     `🕕 ${mention} <b>${dateKey}</b>의 퇴근 시간을 입력해 주세요.`,
     `현재 출근 시간: <code>${startTime}</code>`,
-    "예: <code>18:30</code>"
+    "예: <code>18:30</code>",
+    "오늘 날짜라면 아래 버튼으로 <b>현재 근무 중</b> 상태로 저장할 수도 있어요."
   ].join("\n");
 }
 
@@ -256,6 +257,15 @@ export function buildEditSavedMessage(
     `• 휴게: ${breakLabel}`,
     `• 총 근무 시간: <b>${workedLabel}</b>`,
     "이 수동 수정은 해당 날짜 기록을 기준으로 다시 계산해요."
+  ].join("\n");
+}
+
+export function buildEditOngoingSavedMessage(mention: string, dateKey: string, startTime: string): string {
+  return [
+    `✅ ${mention} <b>${dateKey}</b> 근무를 현재 진행 중으로 수정했어요.`,
+    `• 출근: ${startTime}`,
+    "• 상태: <b>현재 근무 중</b>",
+    "퇴근 시간은 나중에 /end 하거나 다시 /edit 로 수정하면 돼요."
   ].join("\n");
 }
 
