@@ -31,6 +31,7 @@ async function main(): Promise<void> {
     { command: "focus", description: "집중 작업 중" },
     { command: "outside", description: "외근 또는 이동 중" },
     { command: "manual", description: "시간대를 입력해서 부재 안내" },
+    { command: "edit", description: "날짜별 근무 시간 수정" },
     { command: "status", description: "내 현재 근무 상태 보기" },
     { command: "team", description: "방 안 팀 상태 보기" },
     { command: "end", description: "오늘 근무 종료" },

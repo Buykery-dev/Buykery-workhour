@@ -14,10 +14,106 @@ export interface WeeklyMemberSummary {
   workedMs: number;
 }
 
+export interface ManualEditPayload {
+  dateKey: string;
+  startedAt: string;
+  endedAt: string;
+  workedMs: number;
+}
+
 function intersectMs(startA: number, endA: number, startB: number, endB: number): number {
   const start = Math.max(startA, startB);
   const end = Math.min(endA, endB);
   return Math.max(0, end - start);
+}
+
+function getSeoulOffsetDateParts(date: Date): { year: number; month: number; day: number; hour: number; minute: number } {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+  const parts = Object.fromEntries(
+    formatter
+      .formatToParts(date)
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, part.value])
+  );
+
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute)
+  };
+}
+
+export function getSeoulDateKey(date: Date): string {
+  const parts = getSeoulOffsetDateParts(date);
+  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
+}
+
+export function parseEditDateInput(input: string, now: Date): string | undefined {
+  const trimmed = input.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  const mmddMatch = trimmed.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (!mmddMatch) {
+    return undefined;
+  }
+
+  const currentYear = getSeoulOffsetDateParts(now).year;
+  const month = Number(mmddMatch[1]);
+  const day = Number(mmddMatch[2]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return undefined;
+  }
+
+  return `${currentYear}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+export function parseClockTime(input: string): string | undefined {
+  const trimmed = input.trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) {
+    return undefined;
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) {
+    return undefined;
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+export function buildSeoulIso(dateKey: string, timeText: string): string {
+  return `${dateKey}T${timeText}:00+09:00`;
+}
+
+export function buildManualEditPayload(dateKey: string, startTime: string, endTime: string): ManualEditPayload | undefined {
+  const startedAt = buildSeoulIso(dateKey, startTime);
+  const endedAt = buildSeoulIso(dateKey, endTime);
+  const workedMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
+
+  if (workedMs <= 0) {
+    return undefined;
+  }
+
+  return {
+    dateKey,
+    startedAt,
+    endedAt,
+    workedMs
+  };
 }
 
 export function calculateWorkedMsInRange(
@@ -447,11 +543,6 @@ function getSeoulDateParts(date: Date): { year: number; month: number; day: numb
   };
 }
 
-function seoulDateKey(date: Date): string {
-  const parts = getSeoulDateParts(date);
-  return `${parts.year}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
-}
-
 function startOfSeoulWeek(date: Date): Date {
   const parts = getSeoulDateParts(date);
   const daysFromMonday = (parts.weekday + 6) % 7;
@@ -473,7 +564,7 @@ export function getWeeklyReportContext(now: Date): {
 
   return {
     shouldSend,
-    weekKey: seoulDateKey(windowStart),
+    weekKey: getSeoulDateKey(windowStart),
     windowStart,
     windowEnd
   };

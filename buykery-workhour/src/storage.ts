@@ -29,6 +29,11 @@ export class FileStateStore {
                     ...session.shift,
                     awayWindows: session.shift.awayWindows ?? []
                   }
+                : undefined,
+              pendingEdit: session.pendingEdit
+                ? {
+                    ...session.pendingEdit
+                  }
                 : undefined
             }
           ])
@@ -84,6 +89,19 @@ export class FileStateStore {
 
   async appendCompletedShift(record: CompletedShiftRecord): Promise<void> {
     this.state.completedShifts.push(structuredClone(record));
+    await this.save();
+  }
+
+  async upsertCompletedShift(
+    matcher: (record: CompletedShiftRecord) => boolean,
+    nextRecord: CompletedShiftRecord
+  ): Promise<void> {
+    const index = this.state.completedShifts.findIndex(matcher);
+    if (index >= 0) {
+      this.state.completedShifts[index] = structuredClone(nextRecord);
+    } else {
+      this.state.completedShifts.push(structuredClone(nextRecord));
+    }
     await this.save();
   }
 

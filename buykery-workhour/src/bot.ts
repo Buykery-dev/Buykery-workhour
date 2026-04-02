@@ -2,9 +2,14 @@ import { Markup, Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import {
   addAwayWindow,
+  buildManualEditPayload,
   createSessionKey,
   endShift,
+  formatDuration,
+  getSeoulDateKey,
   isManualInputReply,
+  parseClockTime,
+  parseEditDateInput,
   parseManualInput,
   setPausedStatus,
   sortSessionsForTeamView,
@@ -12,6 +17,11 @@ import {
   startOrResumeShift
 } from "./domain.js";
 import {
+  buildEditDatePrompt,
+  buildEditEndPrompt,
+  buildEditParseError,
+  buildEditSavedMessage,
+  buildEditStartPrompt,
   buildEndMessage,
   buildHelpMessage,
   buildManualParseError,
@@ -25,7 +35,7 @@ import {
   createMention
 } from "./messages.js";
 import { FileStateStore } from "./storage.js";
-import type { AwayWindow, UserSession, WorkStatus } from "./types.js";
+import type { AwayWindow, CompletedShiftRecord, UserSession, WorkStatus } from "./types.js";
 
 function getDisplayName(ctx: Context): string {
   const firstName = ctx.from?.first_name ?? "팀원";
@@ -56,9 +66,21 @@ function getSessionFromContext(ctx: Context, store: FileStateStore): { key: stri
       username: ctx.from.username,
       shift: existing?.shift,
       pendingManual: existing?.pendingManual,
+      pendingEdit: existing?.pendingEdit,
       updatedAt: new Date().toISOString()
     }
   };
+}
+
+function recentDateOptions(now: Date): Array<{ label: string; value: string }> {
+  return [0, 1, 2].map((offset) => {
+    const date = new Date(now);
+    date.setDate(date.getDate() - offset);
+    return {
+      label: offset === 0 ? "오늘" : offset === 1 ? "어제" : `${offset}일 전`,
+      value: getSeoulDateKey(date)
+    };
+  });
 }
 
 async function replyHtml(ctx: Context, html: string): Promise<void> {
@@ -196,6 +218,30 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     await store.upsertSession(current.key, current.session);
   });
 
+  bot.command("edit", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current) {
+      return;
+    }
+
+    const dateButtons = recentDateOptions(new Date());
+    const prompt = await ctx.reply(buildEditDatePrompt(current.mention), {
+      parse_mode: "HTML",
+      ...Markup.inlineKeyboard([
+        dateButtons.map((option) => Markup.button.callback(option.label, `edit:date:${option.value}`)),
+        [Markup.button.callback("직접 입력", "edit:date:custom"), Markup.button.callback("취소", "edit:cancel")]
+      ])
+    });
+
+    current.session.pendingEdit = {
+      step: "date",
+      promptMessageId: prompt.message_id,
+      createdAt: new Date().toISOString()
+    };
+    current.session.updatedAt = new Date().toISOString();
+    await store.upsertSession(current.key, current.session);
+  });
+
   bot.command("status", async (ctx) => {
     const current = getSessionFromContext(ctx, store);
     if (!current) {
@@ -315,6 +361,63 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     await ctx.answerCbQuery("취소했어요.");
   });
 
+  bot.action(/^edit:date:(.+)$/, async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (!current) {
+      await ctx.answerCbQuery("세션을 찾지 못했어요.");
+      return;
+    }
+
+    const value = ctx.match[1];
+    if (value === "custom") {
+      const prompt = await ctx.reply(buildEditDatePrompt(current.mention), {
+        parse_mode: "HTML",
+        reply_markup: {
+          force_reply: true,
+          input_field_placeholder: "예: 2026-04-02"
+        }
+      });
+
+      current.session.pendingEdit = {
+        step: "date",
+        promptMessageId: prompt.message_id,
+        createdAt: new Date().toISOString()
+      };
+      current.session.updatedAt = new Date().toISOString();
+      await store.upsertSession(current.key, current.session);
+      await ctx.answerCbQuery("날짜 입력칸을 열어뒀어요.");
+      return;
+    }
+
+    const prompt = await ctx.reply(buildEditStartPrompt(current.mention, value), {
+      parse_mode: "HTML",
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: "예: 09:00"
+      }
+    });
+
+    current.session.pendingEdit = {
+      step: "start",
+      promptMessageId: prompt.message_id,
+      createdAt: new Date().toISOString(),
+      selectedDate: value
+    };
+    current.session.updatedAt = new Date().toISOString();
+    await store.upsertSession(current.key, current.session);
+    await ctx.answerCbQuery(`${value} 선택 완료`);
+  });
+
+  bot.action("edit:cancel", async (ctx) => {
+    const current = getSessionFromContext(ctx, store);
+    if (current) {
+      delete current.session.pendingEdit;
+      current.session.updatedAt = new Date().toISOString();
+      await store.upsertSession(current.key, current.session);
+    }
+    await ctx.answerCbQuery("수정을 취소했어요.");
+  });
+
   bot.on("text", async (ctx, next) => {
     const current = getSessionFromContext(ctx, store);
     if (!current) {
@@ -322,6 +425,106 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     }
 
     const replyToMessageId = ctx.message.reply_to_message?.message_id;
+    if (current.session.pendingEdit && replyToMessageId === current.session.pendingEdit.promptMessageId) {
+      const pendingEdit = current.session.pendingEdit;
+      const now = new Date();
+
+      if (pendingEdit.step === "date") {
+        const dateKey = parseEditDateInput(ctx.message.text, now);
+        if (!dateKey) {
+          await replyHtml(ctx, buildEditParseError(current.mention, "date"));
+          return;
+        }
+
+        const prompt = await ctx.reply(buildEditStartPrompt(current.mention, dateKey), {
+          parse_mode: "HTML",
+          reply_markup: {
+            force_reply: true,
+            input_field_placeholder: "예: 09:00"
+          }
+        });
+
+        current.session.pendingEdit = {
+          step: "start",
+          promptMessageId: prompt.message_id,
+          createdAt: now.toISOString(),
+          selectedDate: dateKey
+        };
+        current.session.updatedAt = now.toISOString();
+        await store.upsertSession(current.key, current.session);
+        return;
+      }
+
+      if (pendingEdit.step === "start") {
+        const startTime = parseClockTime(ctx.message.text);
+        if (!startTime || !pendingEdit.selectedDate) {
+          await replyHtml(ctx, buildEditParseError(current.mention, "time"));
+          return;
+        }
+
+        const prompt = await ctx.reply(buildEditEndPrompt(current.mention, pendingEdit.selectedDate, startTime), {
+          parse_mode: "HTML",
+          reply_markup: {
+            force_reply: true,
+            input_field_placeholder: "예: 18:30"
+          }
+        });
+
+        current.session.pendingEdit = {
+          step: "end",
+          promptMessageId: prompt.message_id,
+          createdAt: now.toISOString(),
+          selectedDate: pendingEdit.selectedDate,
+          startTime
+        };
+        current.session.updatedAt = now.toISOString();
+        await store.upsertSession(current.key, current.session);
+        return;
+      }
+
+      const endTime = parseClockTime(ctx.message.text);
+      if (!endTime || !pendingEdit.selectedDate || !pendingEdit.startTime) {
+        await replyHtml(ctx, buildEditParseError(current.mention, "time"));
+        return;
+      }
+
+      const payload = buildManualEditPayload(pendingEdit.selectedDate, pendingEdit.startTime, endTime);
+      if (!payload) {
+        await replyHtml(ctx, `⚠️ ${current.mention} 퇴근 시간은 출근 시간보다 늦어야 해요.`);
+        return;
+      }
+
+      const nextRecord: CompletedShiftRecord = {
+        chatId: current.session.chatId,
+        userId: current.session.userId,
+        displayName: current.session.displayName,
+        username: current.session.username,
+        startedAt: payload.startedAt,
+        endedAt: payload.endedAt,
+        workedMs: payload.workedMs,
+        pausedMs: 0,
+        pauses: [],
+        awayWindows: []
+      };
+
+      await store.upsertCompletedShift(
+        (record) =>
+          record.chatId === current.session.chatId &&
+          record.userId === current.session.userId &&
+          getSeoulDateKey(new Date(record.startedAt)) === payload.dateKey,
+        nextRecord
+      );
+
+      delete current.session.pendingEdit;
+      current.session.updatedAt = now.toISOString();
+      await store.upsertSession(current.key, current.session);
+      await replyHtml(
+        ctx,
+        buildEditSavedMessage(current.mention, payload.dateKey, pendingEdit.startTime, endTime, formatDuration(payload.workedMs))
+      );
+      return;
+    }
+
     if (!isManualInputReply(current.session, replyToMessageId)) {
       return next();
     }

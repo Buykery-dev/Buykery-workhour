@@ -36,6 +36,14 @@ export interface PendingManualInput {
   createdAt: string;
 }
 
+export interface PendingEditInput {
+  step: "date" | "start" | "end";
+  promptMessageId: number;
+  createdAt: string;
+  selectedDate?: string;
+  startTime?: string;
+}
+
 export interface UserSession {
   chatId: number;
   userId: number;
@@ -43,6 +51,7 @@ export interface UserSession {
   username?: string;
   shift?: ShiftState;
   pendingManual?: PendingManualInput;
+  pendingEdit?: PendingEditInput;
   updatedAt: string;
 }
 

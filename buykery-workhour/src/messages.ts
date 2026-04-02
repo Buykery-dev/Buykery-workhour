@@ -40,6 +40,7 @@ export function buildWelcomeMessage(mention: string): string {
     "• /focus 집중 작업 중",
     "• /outside 외근 중",
     "• /manual 시간대를 입력해서 부재 안내",
+    "• /edit 날짜별 근무 시간 수정",
     "• /status 내 현재 상태 확인",
     "• /team 방 안의 현재 상태 보기",
     "• /end 오늘 근무 종료",
@@ -75,6 +76,9 @@ export function buildHelpMessage(): string {
     "• /manual",
     "예: <code>15:00-16:30 병원 다녀올게요</code>",
     "봇이 답장 입력창을 띄우면 시간대를 적어 주세요.",
+    "",
+    "• /edit",
+    "날짜를 고른 뒤 출근/퇴근 시간을 직접 수정해요.",
     "",
     "• /status",
     "내 현재 근무 상태와 누적 근무 시간을 보여줘요.",
@@ -202,6 +206,47 @@ export function buildManualParseError(mention: string): string {
     `⚠️ ${mention} 시간을 이해하지 못했어요.`,
     "예시처럼 다시 답장해 주세요: <code>15:00-16:30 외근</code>"
   ].join("\n");
+}
+
+export function buildEditDatePrompt(mention: string): string {
+  return [
+    `🛠️ ${mention} 수정할 날짜를 골라 주세요.`,
+    "",
+    "버튼이 없으면 이 메시지에 답장으로 <code>2026-04-02</code> 또는 <code>04-02</code> 형식으로 입력해도 돼요."
+  ].join("\n");
+}
+
+export function buildEditStartPrompt(mention: string, dateKey: string): string {
+  return [
+    `🕘 ${mention} <b>${dateKey}</b>의 출근 시간을 입력해 주세요.`,
+    "예: <code>09:00</code>"
+  ].join("\n");
+}
+
+export function buildEditEndPrompt(mention: string, dateKey: string, startTime: string): string {
+  return [
+    `🕕 ${mention} <b>${dateKey}</b>의 퇴근 시간을 입력해 주세요.`,
+    `현재 출근 시간: <code>${startTime}</code>`,
+    "예: <code>18:30</code>"
+  ].join("\n");
+}
+
+export function buildEditSavedMessage(mention: string, dateKey: string, startTime: string, endTime: string, workedLabel: string): string {
+  return [
+    `✅ ${mention} <b>${dateKey}</b> 근무 시간을 수정했어요.`,
+    `• 출근: ${startTime}`,
+    `• 퇴근: ${endTime}`,
+    `• 총 근무 시간: <b>${workedLabel}</b>`,
+    "이 수동 수정은 해당 날짜 기록을 기준으로 다시 계산해요."
+  ].join("\n");
+}
+
+export function buildEditParseError(mention: string, mode: "date" | "time"): string {
+  if (mode === "date") {
+    return `⚠️ ${mention} 날짜를 이해하지 못했어요. <code>2026-04-02</code> 또는 <code>04-02</code> 형식으로 다시 입력해 주세요.`;
+  }
+
+  return `⚠️ ${mention} 시간을 이해하지 못했어요. <code>09:00</code> 같은 형식으로 다시 입력해 주세요.`;
 }
 
 export function buildTeamStatusMessage(sessions: UserSession[], now: Date): string {
