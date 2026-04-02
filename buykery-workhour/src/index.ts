@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBot } from "./bot.js";
@@ -16,8 +17,15 @@ async function main(): Promise<void> {
     throw new Error("TELEGRAM_BOT_TOKEN is required. Copy .env.example to .env and fill it in.");
   }
 
-  const dataFile = path.resolve(__dirname, "..", "data", "state.json");
-  const store = new FileStateStore(dataFile);
+  const fallbackDataDir = path.resolve(__dirname, "..", "data");
+  let dataDir = process.env.DATA_DIR ?? "/data";
+  try {
+    await access(dataDir);
+  } catch {
+    dataDir = fallbackDataDir;
+  }
+
+  const store = new FileStateStore(path.resolve(dataDir, "events.csv"));
   await store.load();
 
   const bot = createBot(token, store);
