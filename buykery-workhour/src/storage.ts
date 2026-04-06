@@ -3,10 +3,10 @@ import path from "node:path";
 import { getSeoulDateKey } from "./domain.js";
 import type { BotState, CompletedShiftRecord, UserSession } from "./types.js";
 
-const INITIAL_STATE: BotState = { sessions: {}, completedShifts: [], weeklyReports: {} };
+const INITIAL_STATE: BotState = { sessions: {}, completedShifts: [], weeklyReports: {}, deploymentNotices: {} };
 
 type EventOperation = "upsert" | "delete";
-type EventEntity = "session" | "completed_shift" | "weekly_report";
+type EventEntity = "session" | "completed_shift" | "weekly_report" | "deployment_notice";
 
 interface CsvEventRow {
   occurredAt: string;
@@ -140,7 +140,7 @@ export class FileStateStore {
       return;
     }
 
-    this.state = { sessions: {}, completedShifts: [], weeklyReports: {} };
+    this.state = { sessions: {}, completedShifts: [], weeklyReports: {}, deploymentNotices: {} };
     await this.flushAll();
   }
 
@@ -227,6 +227,10 @@ export class FileStateStore {
     return this.state.weeklyReports[`${chatId}:${weekKey}`];
   }
 
+  getDeploymentNoticeMarker(chatId: number): string | undefined {
+    return this.state.deploymentNotices[String(chatId)];
+  }
+
   async markWeeklyReportSent(chatId: number, weekKey: string, sentAt: string): Promise<void> {
     const entityKey = `${chatId}:${weekKey}`;
     this.state.weeklyReports[entityKey] = sentAt;
@@ -236,6 +240,18 @@ export class FileStateStore {
       entityKey,
       operation: "upsert",
       payloadJson: JSON.stringify({ sentAt })
+    });
+  }
+
+  async markDeploymentNoticeSent(chatId: number, version: string, sentAt: string): Promise<void> {
+    const entityKey = String(chatId);
+    this.state.deploymentNotices[entityKey] = version;
+    await this.appendEvent({
+      occurredAt: new Date().toISOString(),
+      entity: "deployment_notice",
+      entityKey,
+      operation: "upsert",
+      payloadJson: JSON.stringify({ version, sentAt })
     });
   }
 
@@ -263,7 +279,7 @@ export class FileStateStore {
   }
 
   private rebuildState(rawCsv: string): BotState {
-    const nextState: BotState = { sessions: {}, completedShifts: [], weeklyReports: {} };
+    const nextState: BotState = { sessions: {}, completedShifts: [], weeklyReports: {}, deploymentNotices: {} };
     const completedShiftMap = new Map<string, CompletedShiftRecord>();
 
     for (const line of rawCsv.split(/\r?\n/)) {
@@ -300,6 +316,16 @@ export class FileStateStore {
         } else {
           const payload = JSON.parse(row.payloadJson) as { sentAt: string };
           nextState.weeklyReports[row.entityKey] = payload.sentAt;
+        }
+        continue;
+      }
+
+      if (row.entity === "deployment_notice") {
+        if (row.operation === "delete") {
+          delete nextState.deploymentNotices[row.entityKey];
+        } else {
+          const payload = JSON.parse(row.payloadJson) as { version: string };
+          nextState.deploymentNotices[row.entityKey] = payload.version;
         }
       }
     }
@@ -358,6 +384,16 @@ export class FileStateStore {
       });
     }
 
+    for (const [key, version] of Object.entries(this.state.deploymentNotices)) {
+      rows.push({
+        occurredAt: nowIso,
+        entity: "deployment_notice",
+        entityKey: key,
+        operation: "upsert",
+        payloadJson: JSON.stringify({ version, sentAt: nowIso })
+      });
+    }
+
     const contents = [
       "occurred_at,entity,entity_key,operation,payload_json",
       ...rows.map(eventRowToLine)
@@ -375,7 +411,8 @@ export class FileStateStore {
           Object.entries(parsed.sessions ?? {}).map(([key, session]) => [key, normalizeSession(session as UserSession)])
         ),
         completedShifts: (parsed.completedShifts ?? []).map((record) => normalizeCompletedShift(record as CompletedShiftRecord)),
-        weeklyReports: parsed.weeklyReports ?? {}
+        weeklyReports: parsed.weeklyReports ?? {},
+        deploymentNotices: parsed.deploymentNotices ?? {}
       };
       await this.flushAll();
       return true;

@@ -16,6 +16,7 @@ export interface WeeklyMemberSummary {
 
 export interface ManualEditPayload {
   dateKey: string;
+  endDateKey: string;
   startedAt: string;
   endedAt: string;
   pausedMs: number;
@@ -100,6 +101,19 @@ export function buildSeoulIso(dateKey: string, timeText: string): string {
   return `${dateKey}T${timeText}:00+09:00`;
 }
 
+function startOfSeoulDay(date: Date): Date {
+  return new Date(buildSeoulIso(getSeoulDateKey(date), "00:00"));
+}
+
+function endOfSeoulDay(date: Date): Date {
+  return new Date(startOfSeoulDay(date).getTime() + 24 * 60 * 60 * 1000 - 1);
+}
+
+function getNextSeoulDateKey(dateKey: string): string {
+  const startOfDay = new Date(buildSeoulIso(dateKey, "00:00"));
+  return getSeoulDateKey(new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000));
+}
+
 export function buildManualEditPayload(dateKey: string, startTime: string, endTime: string): ManualEditPayload | undefined {
   return buildManualEditPayloadWithBreak(dateKey, startTime, endTime, 0);
 }
@@ -131,7 +145,8 @@ export function buildManualEditPayloadWithBreak(
   breakMinutes: number
 ): ManualEditPayload | undefined {
   const startedAt = buildSeoulIso(dateKey, startTime);
-  const endedAt = buildSeoulIso(dateKey, endTime);
+  const endDateKey = endTime < startTime ? getNextSeoulDateKey(dateKey) : dateKey;
+  const endedAt = buildSeoulIso(endDateKey, endTime);
   const grossMs = new Date(endedAt).getTime() - new Date(startedAt).getTime();
   const pausedMs = breakMinutes * MINUTE_MS;
   const workedMs = grossMs - pausedMs;
@@ -142,6 +157,7 @@ export function buildManualEditPayloadWithBreak(
 
   return {
     dateKey,
+    endDateKey,
     startedAt,
     endedAt,
     pausedMs,
@@ -579,9 +595,21 @@ function getSeoulDateParts(date: Date): { year: number; month: number; day: numb
 function startOfSeoulWeek(date: Date): Date {
   const parts = getSeoulDateParts(date);
   const daysFromMonday = (parts.weekday + 6) % 7;
-  const anchorUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0, 0);
-  const startUtc = anchorUtc - daysFromMonday * 24 * 60 * 60 * 1000;
-  return new Date(startUtc);
+  return new Date(startOfSeoulDay(date).getTime() - daysFromMonday * 24 * 60 * 60 * 1000);
+}
+
+export function getCurrentWeekContext(now: Date): {
+  weekKey: string;
+  windowStart: Date;
+  windowEnd: Date;
+} {
+  const windowStart = startOfSeoulWeek(now);
+
+  return {
+    weekKey: getSeoulDateKey(windowStart),
+    windowStart,
+    windowEnd: now
+  };
 }
 
 export function getWeeklyReportContext(now: Date): {
@@ -593,7 +621,7 @@ export function getWeeklyReportContext(now: Date): {
   const parts = getSeoulDateParts(now);
   const shouldSend = parts.weekday === 0 && parts.hour === 23 && parts.minute === 59;
   const windowStart = startOfSeoulWeek(now);
-  const windowEnd = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, 23, 59, 59, 999));
+  const windowEnd = endOfSeoulDay(now);
 
   return {
     shouldSend,

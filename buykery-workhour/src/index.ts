@@ -3,6 +3,7 @@ import { access } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBot } from "./bot.js";
+import { loadDeploymentNoticeConfig, sendDeploymentNotice } from "./deployment.js";
 import { startWeeklySummaryScheduler } from "./scheduler.js";
 import { FileStateStore } from "./storage.js";
 
@@ -17,7 +18,8 @@ async function main(): Promise<void> {
     throw new Error("TELEGRAM_BOT_TOKEN is required. Copy .env.example to .env and fill it in.");
   }
 
-  const fallbackDataDir = path.resolve(__dirname, "..", "data");
+  const appRootDir = path.resolve(__dirname, "..", "..");
+  const fallbackDataDir = path.resolve(appRootDir, "data");
   let dataDir = process.env.DATA_DIR ?? "/data";
   try {
     await access(dataDir);
@@ -42,7 +44,7 @@ async function main(): Promise<void> {
     { command: "edit", description: "날짜별 근무 시간 수정" },
     { command: "status", description: "내 현재 근무 상태 보기" },
     { command: "team", description: "방 안 팀 상태 보기" },
-    { command: "end", description: "오늘 근무 종료" },
+    { command: "end", description: "현재 근무 종료" },
     { command: "help", description: "도움말 보기" }
   ]);
 
@@ -52,6 +54,12 @@ async function main(): Promise<void> {
   await bot.launch({
     dropPendingUpdates: true
   });
+
+  const deploymentNoticeConfig = await loadDeploymentNoticeConfig(appRootDir);
+  const sentDeploymentNotices = await sendDeploymentNotice(bot.telegram, store, deploymentNoticeConfig);
+  if (sentDeploymentNotices > 0) {
+    console.log("Sent deployment notices:", sentDeploymentNotices);
+  }
 
   const weeklySummaryTimer = startWeeklySummaryScheduler(bot, store);
   process.once("SIGINT", () => clearInterval(weeklySummaryTimer));

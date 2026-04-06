@@ -43,7 +43,7 @@ export function buildWelcomeMessage(mention: string): string {
     "• /edit 날짜별 근무 시간 수정",
     "• /status 내 현재 상태 확인",
     "• /team 방 안의 현재 상태 보기",
-    "• /end 오늘 근무 종료",
+    "• /end 현재 근무 종료",
     "• /help 사용법 보기"
   ].join("\n");
 }
@@ -81,17 +81,36 @@ export function buildHelpMessage(): string {
     "날짜를 고른 뒤 출근/퇴근/휴게 시간을 직접 수정해요.",
     "",
     "• /status",
-    "내 현재 근무 상태와 누적 근무 시간을 보여줘요.",
+    "내 현재 근무 상태, 누적 근무 시간, 이번 주 근무 시간을 보여줘요.",
     "",
     "• /team",
     "이 방에서 봇을 쓰는 팀원 상태를 한 번에 보여줘요.",
     "",
     "• /end",
-    "오늘 근무를 종료하고 총 근무 시간을 계산해요.",
+    "현재 진행 중인 근무를 종료하고 총 근무 시간을 계산해요.",
     "",
     "추가 팁:",
     "텔레그램은 사용자가 대신 자동으로 채팅을 치게 할 수 없어서, 봇이 직접 멘션해서 안내해요."
   ].join("\n");
+}
+
+export function buildDeploymentNoticeMessage(versionLabel: string | undefined, summaryLines: string[]): string {
+  const normalizedSummary = summaryLines
+    .map((line) => line.trim().replace(/^[-*•]\s*/, ""))
+    .filter(Boolean);
+
+  return [
+    "📦 <b>Buykery 근태 봇이 업데이트됐어요.</b>",
+    versionLabel ? `• 배포 버전: <code>${escapeHtml(versionLabel)}</code>` : undefined,
+    "• 저장된 근무 시간과 완료 기록은 업데이트 뒤에도 그대로 유지돼요.",
+    "",
+    "<b>이번 업데이트</b>",
+    ...(normalizedSummary.length > 0
+      ? normalizedSummary.map((line) => `• ${escapeHtml(line)}`)
+      : ["• 이번 배포 요약은 아직 등록되지 않았어요."])
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function statusTone(status: WorkStatus): string {
@@ -137,14 +156,14 @@ export function buildPauseMessage(mention: string, status: Exclude<WorkStatus, "
 
 export function buildEndMessage(mention: string, summary: ShiftSummary): string {
   return [
-    `🏁 ${mention} 오늘 근무 끝!`,
+    `🏁 ${mention} 근무 종료!`,
     `• 총 경과 시간: ${formatDuration(summary.totalElapsedMs)}`,
     `• 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`,
-    `• 오늘의 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`
+    `• 실제 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`
   ].join("\n");
 }
 
-export function buildStatusMessage(mention: string, shift: ShiftState, now: Date): string {
+export function buildStatusMessage(mention: string, shift: ShiftState, now: Date, weeklyWorkedMs: number): string {
   const summary = summarizeShift(shift, now);
   const openPause = findOpenPause(shift);
   const effectiveStatus = getEffectiveStatus(shift, now);
@@ -162,7 +181,8 @@ export function buildStatusMessage(mention: string, shift: ShiftState, now: Date
     `${getStatusEmoji(effectiveStatus)} ${mention} 현재 상태는 <b>${getStatusLabel(effectiveStatus)}</b>이에요.`,
     `• 시작 시각: ${formatDateTime(new Date(shift.startedAt))}`,
     `• 누적 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`,
-    `• 누적 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`
+    `• 누적 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`,
+    `• 이번 주 누적 근무 시간: <b>${formatDuration(weeklyWorkedMs)}</b>`
   ];
 
   if (noteLine) {
@@ -173,7 +193,14 @@ export function buildStatusMessage(mention: string, shift: ShiftState, now: Date
 }
 
 export function buildNoShiftMessage(mention: string): string {
-  return `🌙 ${mention} 아직 시작된 근무가 없어요. /start 로 오늘 근무를 시작해 주세요.`;
+  return `🌙 ${mention} 아직 시작된 근무가 없어요. /start 로 근무를 시작해 주세요.`;
+}
+
+export function buildIdleStatusMessage(mention: string, weeklyWorkedMs: number): string {
+  return [
+    `🌙 ${mention} 현재 진행 중인 근무는 없어요.`,
+    `• 이번 주 누적 근무 시간: <b>${formatDuration(weeklyWorkedMs)}</b>`
+  ].join("\n");
 }
 
 export function buildManualPrompt(mention: string): string {
@@ -228,15 +255,16 @@ export function buildEditEndPrompt(mention: string, dateKey: string, startTime: 
     `🕕 ${mention} <b>${dateKey}</b>의 퇴근 시간을 입력해 주세요.`,
     `현재 출근 시간: <code>${startTime}</code>`,
     "예: <code>18:30</code>",
+    "자정을 넘긴 퇴근은 <code>08:00</code>처럼 입력하면 다음 날로 처리돼요.",
     "오늘 날짜라면 아래 버튼으로 <b>현재 근무 중</b> 상태로 저장할 수도 있어요."
   ].join("\n");
 }
 
-export function buildEditBreakPrompt(mention: string, dateKey: string, startTime: string, endTime: string): string {
+export function buildEditBreakPrompt(mention: string, dateKey: string, startTime: string, endLabel: string): string {
   return [
     `☕ ${mention} <b>${dateKey}</b>의 총 휴게 시간을 입력해 주세요.`,
     `• 출근: ${startTime}`,
-    `• 퇴근: ${endTime}`,
+    `• 퇴근: ${endLabel}`,
     "",
     "버튼으로 빠르게 고르거나 <code>30</code>, <code>90</code>, <code>1:30</code> 형식으로 답장할 수 있어요."
   ].join("\n");
@@ -246,17 +274,17 @@ export function buildEditSavedMessage(
   mention: string,
   dateKey: string,
   startTime: string,
-  endTime: string,
+  endLabel: string,
   breakLabel: string,
   workedLabel: string
 ): string {
   return [
     `✅ ${mention} <b>${dateKey}</b> 근무 시간을 수정했어요.`,
     `• 출근: ${startTime}`,
-    `• 퇴근: ${endTime}`,
+    `• 퇴근: ${endLabel}`,
     `• 휴게: ${breakLabel}`,
     `• 총 근무 시간: <b>${workedLabel}</b>`,
-    "이 수동 수정은 해당 날짜 기록을 기준으로 다시 계산해요."
+    "이 수동 수정은 시작 날짜 기준 기록으로 다시 계산해요."
   ].join("\n");
 }
 

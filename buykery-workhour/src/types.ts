@@ -73,4 +73,5 @@ export interface BotState {
   sessions: Record<string, UserSession>;
   completedShifts: CompletedShiftRecord[];
   weeklyReports: Record<string, string>;
+  deploymentNotices: Record<string, string>;
 }

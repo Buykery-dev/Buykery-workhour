@@ -1,11 +1,13 @@
 import { Markup, Telegraf } from "telegraf";
 import type { Context } from "telegraf";
 import {
+  aggregateWeeklyTotals,
   addAwayWindow,
   buildManualEditPayloadWithBreak,
   createSessionKey,
   endShift,
   formatDuration,
+  getCurrentWeekContext,
   getSeoulDateKey,
   isManualInputReply,
   parseBreakMinutesInput,
@@ -21,6 +23,7 @@ import {
   buildEditBreakPrompt,
   buildEditDatePrompt,
   buildEditEndPrompt,
+  buildIdleStatusMessage,
   buildEditOngoingSavedMessage,
   buildEditParseError,
   buildEditSavedMessage,
@@ -88,6 +91,11 @@ function recentDateOptions(now: Date): Array<{ label: string; value: string }> {
 
 function isTodayDateKey(dateKey: string, now: Date): boolean {
   return dateKey === getSeoulDateKey(now);
+}
+
+function formatEditEndLabel(startDateKey: string, endedAt: string): string {
+  const endTime = endedAt.slice(11, 16);
+  return getSeoulDateKey(new Date(endedAt)) === startDateKey ? endTime : `다음날 ${endTime}`;
 }
 
 function createActiveShiftFromEdit(startedAt: string): ShiftState {
@@ -266,12 +274,22 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       return;
     }
 
+    const now = new Date();
+    const { windowStart, windowEnd } = getCurrentWeekContext(now);
+    const weeklyWorkedMs =
+      aggregateWeeklyTotals(
+        store.getCompletedShiftsByChat(current.session.chatId),
+        store.getSessionsByChat(current.session.chatId),
+        windowStart,
+        windowEnd
+      ).find((member) => member.chatId === current.session.chatId && member.userId === current.session.userId)?.workedMs ?? 0;
+
     if (!current.session.shift) {
-      await replyHtml(ctx, buildNoShiftMessage(current.mention));
+      await replyHtml(ctx, buildIdleStatusMessage(current.mention, weeklyWorkedMs));
       return;
     }
 
-    await replyHtml(ctx, buildStatusMessage(current.mention, current.session.shift, new Date()));
+    await replyHtml(ctx, buildStatusMessage(current.mention, current.session.shift, now, weeklyWorkedMs));
   });
 
   bot.command("team", async (ctx) => {
@@ -521,7 +539,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
         current.mention,
         payload.dateKey,
         nextRecord.startedAt.slice(11, 16),
-        nextRecord.endedAt.slice(11, 16),
+        formatEditEndLabel(payload.dateKey, nextRecord.endedAt),
         formatDuration(payload.pausedMs),
         formatDuration(payload.workedMs)
       )
@@ -535,12 +553,23 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       return;
     }
 
+    const payload = buildManualEditPayloadWithBreak(
+      current.session.pendingEdit.selectedDate,
+      current.session.pendingEdit.startTime,
+      current.session.pendingEdit.endTime,
+      0
+    );
+    if (!payload) {
+      await ctx.answerCbQuery("수정 흐름을 다시 시작해 주세요.");
+      return;
+    }
+
     const prompt = await ctx.reply(
       buildEditBreakPrompt(
         current.mention,
         current.session.pendingEdit.selectedDate,
         current.session.pendingEdit.startTime,
-        current.session.pendingEdit.endTime
+        formatEditEndLabel(current.session.pendingEdit.selectedDate, payload.endedAt)
       ),
       {
         parse_mode: "HTML",
@@ -641,11 +670,12 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
 
         const payload = buildManualEditPayloadWithBreak(pendingEdit.selectedDate, pendingEdit.startTime, endTime, 0);
         if (!payload) {
-          await replyHtml(ctx, `⚠️ ${current.mention} 퇴근 시간은 출근 시간보다 늦어야 해요.`);
+          await replyHtml(ctx, `⚠️ ${current.mention} 퇴근 시간은 출근 시간과 같을 수 없어요.`);
           return;
         }
 
-        const prompt = await ctx.reply(buildEditBreakPrompt(current.mention, pendingEdit.selectedDate, pendingEdit.startTime, endTime), {
+        const endLabel = formatEditEndLabel(pendingEdit.selectedDate, payload.endedAt);
+        const prompt = await ctx.reply(buildEditBreakPrompt(current.mention, pendingEdit.selectedDate, pendingEdit.startTime, endLabel), {
           parse_mode: "HTML",
           ...Markup.inlineKeyboard([
             [
@@ -716,7 +746,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
           current.mention,
           payload.dateKey,
           pendingEdit.startTime,
-          pendingEdit.endTime,
+          formatEditEndLabel(payload.dateKey, payload.endedAt),
           formatDuration(payload.pausedMs),
           formatDuration(payload.workedMs)
         )

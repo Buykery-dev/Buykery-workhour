@@ -6,6 +6,10 @@ services:
     rootDir: buykery-workhour
     buildCommand: npm install && npm run build
     startCommand: npm start
+    disk:
+      name: workhour-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
@@ -13,3 +17,7 @@ services:
         value: Buykery 근태 텔레그램 봇
       - key: BOT_USERNAME
         value: whereIamnow_bot
+      - key: DATA_DIR
+        value: /data
+      - key: BOT_UPDATE_NOTIFICATIONS_ENABLED
+        value: "true"
