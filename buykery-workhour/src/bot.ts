@@ -4,6 +4,7 @@ import {
   aggregateWeeklyTotals,
   addAwayWindow,
   buildManualEditPayloadWithBreak,
+  buildManualWorkedDurationPayload,
   createSessionKey,
   endShift,
   formatDuration,
@@ -14,6 +15,7 @@ import {
   parseClockTime,
   parseEditDateInput,
   parseManualInput,
+  parseWorkedDurationInput,
   setPausedStatus,
   sortSessionsForTeamView,
   trimActiveAwayWindow,
@@ -23,11 +25,13 @@ import {
   buildEditBreakPrompt,
   buildEditDatePrompt,
   buildEditEndPrompt,
+  buildEditWorkedPrompt,
   buildIdleStatusMessage,
   buildEditOngoingSavedMessage,
   buildEditParseError,
   buildEditSavedMessage,
   buildEditStartPrompt,
+  buildEditWorkedSavedMessage,
   buildEndMessage,
   buildHelpMessage,
   buildManualParseError,
@@ -71,6 +75,7 @@ function getSessionFromContext(ctx: Context, store: FileStateStore): { key: stri
       displayName,
       username: ctx.from.username,
       shift: existing?.shift,
+      lastStatusMessageId: existing?.lastStatusMessageId,
       pendingManual: existing?.pendingManual,
       pendingEdit: existing?.pendingEdit,
       updatedAt: new Date().toISOString()
@@ -108,6 +113,35 @@ function createActiveShiftFromEdit(startedAt: string): ShiftState {
   };
 }
 
+async function openEditValuePrompt(
+  ctx: Context,
+  store: FileStateStore,
+  current: { key: string; session: UserSession; mention: string },
+  dateKey: string,
+  now: Date
+): Promise<void> {
+  const isToday = isTodayDateKey(dateKey, now);
+  const prompt = await ctx.reply(
+    isToday ? buildEditStartPrompt(current.mention, dateKey) : buildEditWorkedPrompt(current.mention, dateKey),
+    {
+      parse_mode: "HTML",
+      reply_markup: {
+        force_reply: true,
+        input_field_placeholder: isToday ? "예: 09:00" : "예: 8 또는 8:30"
+      }
+    }
+  );
+
+  current.session.pendingEdit = {
+    step: isToday ? "start" : "worked",
+    promptMessageId: prompt.message_id,
+    createdAt: now.toISOString(),
+    selectedDate: dateKey
+  };
+  current.session.updatedAt = now.toISOString();
+  await store.upsertSession(current.key, current.session);
+}
+
 async function replyHtml(ctx: Context, html: string): Promise<void> {
   await ctx.reply(html, {
     parse_mode: "HTML",
@@ -115,6 +149,75 @@ async function replyHtml(ctx: Context, html: string): Promise<void> {
       is_disabled: true
     }
   });
+}
+
+function htmlMessageOptions(): {
+  parse_mode: "HTML";
+  link_preview_options: { is_disabled: true };
+} {
+  return {
+    parse_mode: "HTML",
+    link_preview_options: {
+      is_disabled: true
+    }
+  };
+}
+
+function getTelegramErrorDescription(error: unknown): string {
+  const response = (error as { response?: { description?: string } }).response;
+  return response?.description?.toLowerCase() ?? "";
+}
+
+async function upsertStatusMessage(
+  ctx: Context,
+  store: FileStateStore,
+  current: { key: string; session: UserSession; mention: string },
+  html: string
+): Promise<void> {
+  const messageId = current.session.lastStatusMessageId;
+  const options = htmlMessageOptions();
+
+  if (messageId) {
+    try {
+      await ctx.telegram.callApi("editMessageText", {
+        chat_id: current.session.chatId,
+        message_id: messageId,
+        text: html,
+        ...options
+      });
+      await store.upsertSession(current.key, current.session);
+      return;
+    } catch (error) {
+      if (getTelegramErrorDescription(error).includes("message is not modified")) {
+        await store.upsertSession(current.key, current.session);
+        return;
+      }
+    }
+  }
+
+  const message = await ctx.reply(html, options);
+  current.session.lastStatusMessageId = message.message_id;
+  await store.upsertSession(current.key, current.session);
+}
+
+async function clearStatusMessage(
+  ctx: Context,
+  current: { key: string; session: UserSession; mention: string }
+): Promise<void> {
+  if (!current.session.lastStatusMessageId) {
+    return;
+  }
+
+  try {
+    await ctx.telegram.callApi("deleteMessage", {
+      chat_id: current.session.chatId,
+      message_id: current.session.lastStatusMessageId
+    });
+  } catch {
+    // Ignore missing or already-deleted messages.
+  }
+
+  delete current.session.lastStatusMessageId;
 }
 
 async function handlePause(
@@ -136,8 +239,7 @@ async function handlePause(
 
   current.session.shift = result.shift;
   current.session.updatedAt = now.toISOString();
-  await store.upsertSession(current.key, current.session);
-  await replyHtml(ctx, buildPauseMessage(current.mention, status, result.mode));
+  await upsertStatusMessage(ctx, store, current, buildPauseMessage(current.mention, status, result.mode));
 }
 
 export function createBot(token: string, store: FileStateStore): Telegraf {
@@ -167,8 +269,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
 
-    await store.upsertSession(current.key, current.session);
-    await replyHtml(ctx, buildStartMessage(current.mention, now, result.mode));
+    await upsertStatusMessage(ctx, store, current, buildStartMessage(current.mention, now, result.mode));
   });
 
   bot.command("back", async (ctx) => {
@@ -183,8 +284,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
 
-    await store.upsertSession(current.key, current.session);
-    await replyHtml(ctx, buildStartMessage(current.mention, now, result.mode));
+    await upsertStatusMessage(ctx, store, current, buildStartMessage(current.mention, now, result.mode));
   });
 
   bot.command("stop", async (ctx) => {
@@ -192,6 +292,18 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
   });
 
   bot.command("lunch", async (ctx) => {
+    await handlePause(ctx, store, "lunch");
+  });
+
+  bot.command("bab", async (ctx) => {
+    await handlePause(ctx, store, "lunch");
+  });
+
+  bot.hears(/^\/밥(?:@\w+)?$/u, async (ctx) => {
+    await handlePause(ctx, store, "lunch");
+  });
+
+  bot.hears(/^밥$/u, async (ctx) => {
     await handlePause(ctx, store, "lunch");
   });
 
@@ -285,11 +397,11 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       ).find((member) => member.chatId === current.session.chatId && member.userId === current.session.userId)?.workedMs ?? 0;
 
     if (!current.session.shift) {
-      await replyHtml(ctx, buildIdleStatusMessage(current.mention, weeklyWorkedMs));
+      await upsertStatusMessage(ctx, store, current, buildIdleStatusMessage(current.mention, weeklyWorkedMs));
       return;
     }
 
-    await replyHtml(ctx, buildStatusMessage(current.mention, current.session.shift, now, weeklyWorkedMs));
+    await upsertStatusMessage(ctx, store, current, buildStatusMessage(current.mention, current.session.shift, now, weeklyWorkedMs));
   });
 
   bot.command("team", async (ctx) => {
@@ -319,6 +431,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     delete current.session.shift;
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
+    await clearStatusMessage(ctx, current);
 
     await store.appendCompletedShift({
       chatId: current.session.chatId,
@@ -333,7 +446,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       awayWindows: result.shift?.awayWindows ?? []
     });
     await store.upsertSession(current.key, current.session);
-    await replyHtml(ctx, buildEndMessage(current.mention, result.summary));
+    await replyHtml(ctx, buildEndMessage(current.mention, result.summary, now));
   });
 
   bot.action(/^manual:(30|60|120|180)$/, async (ctx) => {
@@ -355,11 +468,8 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
 
     current.session.shift = addAwayWindow(current.session.shift, awayWindow);
     current.session.updatedAt = now.toISOString();
-    await store.upsertSession(current.key, current.session);
     await ctx.answerCbQuery(`${minutes}분 부재로 저장했어요.`);
-    await ctx.reply(buildManualSavedMessage(current.mention, { from: now, to, note: awayWindow.note }), {
-      parse_mode: "HTML"
-    });
+    await upsertStatusMessage(ctx, store, current, buildManualSavedMessage(current.mention, { from: now, to, note: awayWindow.note }));
   });
 
   bot.action("manual:custom", async (ctx) => {
@@ -425,22 +535,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       return;
     }
 
-    const prompt = await ctx.reply(buildEditStartPrompt(current.mention, value), {
-      parse_mode: "HTML",
-      reply_markup: {
-        force_reply: true,
-        input_field_placeholder: "예: 09:00"
-      }
-    });
-
-    current.session.pendingEdit = {
-      step: "start",
-      promptMessageId: prompt.message_id,
-      createdAt: new Date().toISOString(),
-      selectedDate: value
-    };
-    current.session.updatedAt = new Date().toISOString();
-    await store.upsertSession(current.key, current.session);
+    await openEditValuePrompt(ctx, store, current, value, new Date());
     await ctx.answerCbQuery(`${value} 선택 완료`);
   });
 
@@ -609,22 +704,48 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
           return;
         }
 
-        const prompt = await ctx.reply(buildEditStartPrompt(current.mention, dateKey), {
-          parse_mode: "HTML",
-          reply_markup: {
-            force_reply: true,
-            input_field_placeholder: "예: 09:00"
-          }
-        });
+        await openEditValuePrompt(ctx, store, current, dateKey, now);
+        return;
+      }
 
-        current.session.pendingEdit = {
-          step: "start",
-          promptMessageId: prompt.message_id,
-          createdAt: now.toISOString(),
-          selectedDate: dateKey
+      if (pendingEdit.step === "worked") {
+        const workedMinutes = parseWorkedDurationInput(ctx.message.text);
+        if (workedMinutes === undefined || !pendingEdit.selectedDate) {
+          await replyHtml(ctx, buildEditParseError(current.mention, "worked"));
+          return;
+        }
+
+        const payload = buildManualWorkedDurationPayload(pendingEdit.selectedDate, workedMinutes);
+        if (!payload) {
+          await replyHtml(ctx, buildEditParseError(current.mention, "worked"));
+          return;
+        }
+
+        const nextRecord: CompletedShiftRecord = {
+          chatId: current.session.chatId,
+          userId: current.session.userId,
+          displayName: current.session.displayName,
+          username: current.session.username,
+          startedAt: payload.startedAt,
+          endedAt: payload.endedAt,
+          workedMs: payload.workedMs,
+          pausedMs: 0,
+          pauses: [],
+          awayWindows: []
         };
+
+        await store.upsertCompletedShift(
+          (record) =>
+            record.chatId === current.session.chatId &&
+            record.userId === current.session.userId &&
+            getSeoulDateKey(new Date(record.startedAt)) === payload.dateKey,
+          nextRecord
+        );
+
+        delete current.session.pendingEdit;
         current.session.updatedAt = now.toISOString();
         await store.upsertSession(current.key, current.session);
+        await replyHtml(ctx, buildEditWorkedSavedMessage(current.mention, payload.dateKey, formatDuration(payload.workedMs)));
         return;
       }
 
@@ -781,8 +902,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
 
-    await store.upsertSession(current.key, current.session);
-    await replyHtml(ctx, buildManualSavedMessage(current.mention, parsed));
+    await upsertStatusMessage(ctx, store, current, buildManualSavedMessage(current.mention, parsed));
   });
 
   return bot;

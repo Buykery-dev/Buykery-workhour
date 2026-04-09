@@ -1,4 +1,4 @@
-import { findOpenPause, formatDuration, getActiveAwayWindow, getEffectiveStatus, getStatusEmoji, getStatusLabel, summarizeShift } from "./domain.js";
+import { findOpenPause, formatDuration, getActiveAwayWindow, getEffectiveStatus, getStatusEmoji, getStatusLabel, isWeekendInSeoul, summarizeShift } from "./domain.js";
 import type { ParsedManualInput, ShiftSummary, WeeklyMemberSummary } from "./domain.js";
 import type { ShiftState, UserSession, WorkStatus } from "./types.js";
 
@@ -35,7 +35,7 @@ export function buildWelcomeMessage(mention: string): string {
     "• /start 근무 시작 또는 복귀",
     "• /back 쉬는 상태에서 업무 복귀",
     "• /stop 잠깐 쉬는 중",
-    "• /lunch 식사 중",
+    "• /lunch 또는 /bab 식사 중",
     "• /meeting 회의 중",
     "• /focus 집중 작업 중",
     "• /outside 외근 중",
@@ -61,8 +61,8 @@ export function buildHelpMessage(): string {
     "• /stop",
     "짧은 휴식, 외근 준비, 잠깐 자리 비움 상태로 바꿔요.",
     "",
-    "• /lunch",
-    "점심이나 식사 시간을 기록해요.",
+    "• /lunch 또는 /bab",
+    "점심이나 식사 시간을 기록해요. 일반 텍스트 <code>밥</code>도 인식해요.",
     "",
     "• /meeting",
     "회의 중이라 바로 응답이 어려운 상태를 남겨요.",
@@ -143,7 +143,8 @@ export function buildStartMessage(mention: string, now: Date, mode: "started" | 
     return `🟢 ${formatDateTime(now)} ${mention} 잘 쉬고 왔어요. 다시 근무 시작!`;
   }
 
-  return `🟢 ${formatDateTime(now)} ${mention} 근무 시작! 지금 일하고 있어요.`;
+  const weekendTone = isWeekendInSeoul(now) ? "\n주말에 출근이라니? Buykery는 대박나겠는걸요?" : "";
+  return `🟢 ${formatDateTime(now)} ${mention} 근무 시작! 지금 일하고 있어요.${weekendTone}`;
 }
 
 export function buildPauseMessage(mention: string, status: Exclude<WorkStatus, "working">, mode: "paused" | "switched" | "noop"): string {
@@ -151,16 +152,19 @@ export function buildPauseMessage(mention: string, status: Exclude<WorkStatus, "
     return `${getStatusEmoji(status)} ${mention} 현재 상태가 이미 <b>${getStatusLabel(status)}</b>이에요.`;
   }
 
-  return `${getStatusEmoji(status)} ${mention} <b>${getStatusLabel(status)}</b>로 변경됐어요. ${statusTone(status)}`;
+  return `${getStatusEmoji(status)} ${mention} 현재 상태는 <b>${getStatusLabel(status)}</b>이에요. ${statusTone(status)}`;
 }
 
-export function buildEndMessage(mention: string, summary: ShiftSummary): string {
+export function buildEndMessage(mention: string, summary: ShiftSummary, now: Date): string {
   return [
     `🏁 ${mention} 근무 종료!`,
     `• 총 경과 시간: ${formatDuration(summary.totalElapsedMs)}`,
     `• 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`,
-    `• 실제 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`
-  ].join("\n");
+    `• 실제 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`,
+    isWeekendInSeoul(now) ? "고생하셨어요. 남은 주말 알차게, 행복하게 보내세요." : undefined
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function buildStatusMessage(mention: string, shift: ShiftState, now: Date, weeklyWorkedMs: number): string {
@@ -250,6 +254,14 @@ export function buildEditStartPrompt(mention: string, dateKey: string): string {
   ].join("\n");
 }
 
+export function buildEditWorkedPrompt(mention: string, dateKey: string): string {
+  return [
+    `🧾 ${mention} <b>${dateKey}</b> 근무 시간을 수정할게요.`,
+    "출퇴근 체크를 잊어버리셨군요! 몇 시간이나 일했어요? 휴식 시간 제외하고 말씀해 주세요.",
+    "예: <code>8</code>, <code>8.5</code>, <code>8:30</code>"
+  ].join("\n");
+}
+
 export function buildEditEndPrompt(mention: string, dateKey: string, startTime: string): string {
   return [
     `🕕 ${mention} <b>${dateKey}</b>의 퇴근 시간을 입력해 주세요.`,
@@ -288,6 +300,14 @@ export function buildEditSavedMessage(
   ].join("\n");
 }
 
+export function buildEditWorkedSavedMessage(mention: string, dateKey: string, workedLabel: string): string {
+  return [
+    `✅ ${mention} <b>${dateKey}</b> 근무 시간을 수정했어요.`,
+    `• 총 근무 시간: <b>${workedLabel}</b>`,
+    "이 기록은 출퇴근 시각 대신 총 근무 시간 기준으로 저장했어요."
+  ].join("\n");
+}
+
 export function buildEditOngoingSavedMessage(mention: string, dateKey: string, startTime: string): string {
   return [
     `✅ ${mention} <b>${dateKey}</b> 근무를 현재 진행 중으로 수정했어요.`,
@@ -297,9 +317,13 @@ export function buildEditOngoingSavedMessage(mention: string, dateKey: string, s
   ].join("\n");
 }
 
-export function buildEditParseError(mention: string, mode: "date" | "time"): string {
+export function buildEditParseError(mention: string, mode: "date" | "time" | "worked"): string {
   if (mode === "date") {
     return `⚠️ ${mention} 날짜를 이해하지 못했어요. <code>2026-04-02</code> 또는 <code>04-02</code> 형식으로 다시 입력해 주세요.`;
+  }
+
+  if (mode === "worked") {
+    return `⚠️ ${mention} 근무 시간을 이해하지 못했어요. <code>8</code>, <code>8.5</code>, <code>8:30</code> 같은 형식으로 다시 입력해 주세요.`;
   }
 
   return `⚠️ ${mention} 시간을 이해하지 못했어요. <code>09:00</code> 같은 형식으로 다시 입력해 주세요.`;

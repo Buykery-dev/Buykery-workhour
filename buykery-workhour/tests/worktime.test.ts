@@ -7,6 +7,7 @@ import {
   aggregateWeeklyTotals,
   buildManualEditPayload,
   buildManualEditPayloadWithBreak,
+  buildManualWorkedDurationPayload,
   calculateWorkedMsInRange,
   createShift,
   endShift,
@@ -16,12 +17,31 @@ import {
   parseClockTime,
   parseEditDateInput,
   parseManualInput,
+  parseWorkedDurationInput,
   setPausedStatus,
   startOrResumeShift
 } from "../src/domain.js";
 import { createBot } from "../src/bot.js";
 import { sendDeploymentNotice } from "../src/deployment.js";
+import { buildEndMessage, buildPauseMessage, buildStartMessage } from "../src/messages.js";
 import { FileStateStore } from "../src/storage.js";
+
+function mockBotTelegramCallApi(
+  bot: ReturnType<typeof createBot>,
+  handler: (...args: unknown[]) => Promise<unknown>
+): () => void {
+  const prototype = Object.getPrototypeOf(bot.telegram) as {
+    callApi: (...args: unknown[]) => Promise<unknown>;
+  };
+  const original = prototype.callApi;
+  prototype.callApi = async function (...args: unknown[]): Promise<unknown> {
+    return handler(...args);
+  };
+
+  return () => {
+    prototype.callApi = original;
+  };
+}
 
 test("break time is excluded from worked duration", () => {
   const start = new Date("2026-03-30T09:00:00+09:00");
@@ -236,8 +256,46 @@ test("manual edit payload rejects breaks longer than overnight shift", () => {
   assert.equal(payload, undefined);
 });
 
-test("edit command preserves current shift state while opening pending edit flow", async () => {
+test("worked duration parser accepts hour and clock formats", () => {
+  assert.equal(parseWorkedDurationInput("8"), 480);
+  assert.equal(parseWorkedDurationInput("8.5"), 510);
+  assert.equal(parseWorkedDurationInput("8:30"), 510);
+});
+
+test("manual worked duration payload stores total hours on selected date", () => {
+  const payload = buildManualWorkedDurationPayload("2026-04-02", 510);
+  assert.ok(payload);
+  assert.equal(payload?.dateKey, "2026-04-02");
+  assert.equal(payload?.workedMs, 8.5 * 60 * 60 * 1000);
+});
+
+test("manual worked duration payload rejects more than 24 hours", () => {
+  assert.equal(buildManualWorkedDurationPayload("2026-04-02", 24 * 60 + 1), undefined);
+});
+
+test("weekend start message includes weekend notice in Seoul", () => {
+  const message = buildStartMessage("<b>Han</b>", new Date("2026-04-04T01:00:00Z"), "started");
+  assert.match(message, /주말에 출근이라니/);
+});
+
+test("weekend end message includes weekend closing note in Seoul", () => {
+  const message = buildEndMessage(
+    "<b>Han</b>",
+    { totalElapsedMs: 2 * 60 * 60 * 1000, totalPausedMs: 0, workedMs: 2 * 60 * 60 * 1000 },
+    new Date("2026-04-05T02:00:00Z")
+  );
+  assert.match(message, /남은 주말 알차게, 행복하게 보내세요/);
+});
+
+test("pause message uses natural lunch wording", () => {
+  const message = buildPauseMessage("Hanvenue", "lunch", "paused");
+  assert.match(message, /현재 상태는 <b>식사 중<\/b>이에요/);
+  assert.doesNotMatch(message, /식사 중로/);
+});
+
+test("/밥 alias switches status to lunch", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
 
   try {
     const store = new FileStateStore(path.join(tempDir, "events.csv"));
@@ -259,6 +317,12 @@ test("edit command preserves current shift state while opening pending edit flow
     });
 
     const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      if (args[0] === "sendMessage") {
+        return { message_id: 777 };
+      }
+      return true;
+    });
     bot.botInfo = {
       id: 999,
       is_bot: true,
@@ -268,16 +332,264 @@ test("edit command preserves current shift state while opening pending edit flow
       can_read_all_group_messages: false,
       supports_inline_queries: false
     };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
     bot.context.reply = async () => ({ message_id: 777 } as never);
     bot.context.answerCbQuery = async () => true as never;
-    Object.defineProperty(bot.telegram, "callApi", {
-      value: async (...args: unknown[]) => {
-        if (args[0] === "sendMessage") {
-          return { message_id: 777 };
+
+    await bot.handleUpdate({
+      update_id: 2,
+      message: {
+        message_id: 11,
+        date: Math.floor(new Date("2026-04-02T13:20:00+09:00").getTime() / 1000),
+        text: "/밥",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
         }
-        return true;
       }
     });
+
+    const session = store.getSession("100:200");
+    assert.equal(session?.shift?.currentStatus, "lunch");
+  } finally {
+    restoreCallApi?.();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("/bab alias switches status to lunch", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    await store.upsertSession("100:200", {
+      chatId: 100,
+      userId: 200,
+      displayName: "Han",
+      username: "han",
+      shift: {
+        startedAt: "2026-04-02T13:00:00.000Z",
+        currentStatus: "working",
+        totalPausedMs: 0,
+        pauses: [],
+        awayWindows: []
+      },
+      updatedAt: "2026-04-02T13:00:00.000Z"
+    });
+
+    const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      if (args[0] === "sendMessage") {
+        return { message_id: 777 };
+      }
+      return true;
+    });
+    bot.botInfo = {
+      id: 999,
+      is_bot: true,
+      first_name: "Test",
+      username: "test_bot",
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
+    bot.context.reply = async () => ({ message_id: 777 } as never);
+    bot.context.answerCbQuery = async () => true as never;
+
+    await bot.handleUpdate({
+      update_id: 3,
+      message: {
+        message_id: 12,
+        date: Math.floor(new Date("2026-04-02T13:20:00+09:00").getTime() / 1000),
+        text: "/bab",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        entities: [{ type: "bot_command", offset: 0, length: 4 }]
+      }
+    });
+
+    const session = store.getSession("100:200");
+    assert.equal(session?.shift?.currentStatus, "lunch");
+  } finally {
+    restoreCallApi?.();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("status card is tracked during work and cleared on /end", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    const calls: string[] = [];
+    let nextMessageId = 500;
+    const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      const method = String(args[0]);
+      calls.push(method);
+      if (method === "sendMessage") {
+        return { message_id: nextMessageId++ };
+      }
+      return true;
+    });
+    bot.botInfo = {
+      id: 999,
+      is_bot: true,
+      first_name: "Test",
+      username: "test_bot",
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
+    bot.context.reply = async () => ({ message_id: nextMessageId++ } as never);
+    bot.context.answerCbQuery = async () => true as never;
+
+    await bot.handleUpdate({
+      update_id: 10,
+      message: {
+        message_id: 21,
+        date: Math.floor(new Date("2026-04-02T09:00:00+09:00").getTime() / 1000),
+        text: "/start",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        entities: [{ type: "bot_command", offset: 0, length: 6 }]
+      }
+    });
+
+    let session = store.getSession("100:200");
+    assert.equal(session?.lastStatusMessageId, 500);
+
+    await bot.handleUpdate({
+      update_id: 11,
+      message: {
+        message_id: 22,
+        date: Math.floor(new Date("2026-04-02T12:00:00+09:00").getTime() / 1000),
+        text: "/stop",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        entities: [{ type: "bot_command", offset: 0, length: 5 }]
+      }
+    });
+
+    session = store.getSession("100:200");
+    assert.ok(session?.lastStatusMessageId);
+    assert.equal(session?.shift?.currentStatus, "break");
+
+    await bot.handleUpdate({
+      update_id: 12,
+      message: {
+        message_id: 23,
+        date: Math.floor(new Date("2026-04-02T18:00:00+09:00").getTime() / 1000),
+        text: "/end",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        entities: [{ type: "bot_command", offset: 0, length: 4 }]
+      }
+    });
+
+    session = store.getSession("100:200");
+    assert.equal(session?.lastStatusMessageId, undefined);
+    assert.equal(session?.shift, undefined);
+    assert.ok(calls.includes("deleteMessage"));
+  } finally {
+    restoreCallApi?.();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("edit command preserves current shift state while opening pending edit flow", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    await store.upsertSession("100:200", {
+      chatId: 100,
+      userId: 200,
+      displayName: "Han",
+      username: "han",
+      shift: {
+        startedAt: "2026-04-02T13:00:00.000Z",
+        currentStatus: "working",
+        totalPausedMs: 0,
+        pauses: [],
+        awayWindows: []
+      },
+      updatedAt: "2026-04-02T13:00:00.000Z"
+    });
+
+    const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      if (args[0] === "sendMessage") {
+        return { message_id: 777 };
+      }
+      return true;
+    });
+    bot.botInfo = {
+      id: 999,
+      is_bot: true,
+      first_name: "Test",
+      username: "test_bot",
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
+    bot.context.reply = async () => ({ message_id: 777 } as never);
+    bot.context.answerCbQuery = async () => true as never;
 
     await bot.handleUpdate({
       update_id: 1,
@@ -311,6 +623,91 @@ test("edit command preserves current shift state while opening pending edit flow
     assert.equal(session?.shift?.currentStatus, "working");
     assert.equal(session?.pendingEdit?.step, "date");
   } finally {
+    restoreCallApi?.();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("past-date edit switches to worked-duration flow", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    await store.upsertSession("100:200", {
+      chatId: 100,
+      userId: 200,
+      displayName: "Han",
+      username: "han",
+      updatedAt: "2026-04-02T13:00:00.000Z"
+    });
+
+    const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      if (args[0] === "sendMessage") {
+        return { message_id: 777 };
+      }
+      return true;
+    });
+    bot.botInfo = {
+      id: 999,
+      is_bot: true,
+      first_name: "Test",
+      username: "test_bot",
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
+    bot.context.reply = async () => ({ message_id: 777 } as never);
+    bot.context.answerCbQuery = async () => true as never;
+
+    await store.upsertSession("100:200", {
+      ...(store.getSession("100:200") as NonNullable<ReturnType<FileStateStore["getSession"]>>),
+      pendingEdit: {
+        step: "date",
+        promptMessageId: 700,
+        createdAt: "2026-04-08T00:00:00.000Z"
+      },
+      updatedAt: "2026-04-08T00:00:00.000Z"
+    });
+
+    await bot.handleUpdate({
+      update_id: 30,
+      message: {
+        message_id: 31,
+        date: Math.floor(new Date("2026-04-08T10:00:00+09:00").getTime() / 1000),
+        text: "2026-04-01",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        reply_to_message: {
+          message_id: 700,
+          date: Math.floor(new Date("2026-04-08T09:59:00+09:00").getTime() / 1000),
+          chat: {
+            id: 100,
+            type: "group",
+            title: "QA"
+          }
+        } as never
+      }
+    });
+
+    const session = store.getSession("100:200");
+    assert.equal(session?.pendingEdit?.step, "worked");
+    assert.equal(session?.pendingEdit?.selectedDate, "2026-04-01");
+  } finally {
+    restoreCallApi?.();
     await rm(tempDir, { recursive: true, force: true });
   }
 });

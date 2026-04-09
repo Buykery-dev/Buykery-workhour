@@ -37,7 +37,7 @@ export interface PendingManualInput {
 }
 
 export interface PendingEditInput {
-  step: "date" | "start" | "end" | "break";
+  step: "date" | "worked" | "start" | "end" | "break";
   promptMessageId: number;
   createdAt: string;
   selectedDate?: string;
@@ -51,6 +51,7 @@ export interface UserSession {
   displayName: string;
   username?: string;
   shift?: ShiftState;
+  lastStatusMessageId?: number;
   pendingManual?: PendingManualInput;
   pendingEdit?: PendingEditInput;
   updatedAt: string;

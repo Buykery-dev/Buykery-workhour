@@ -138,6 +138,42 @@ export function parseBreakMinutesInput(input: string): number | undefined {
   return hours * 60 + minutes;
 }
 
+export function parseWorkedDurationInput(input: string): number | undefined {
+  const trimmed = input.trim();
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    const hours = Number(trimmed);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      return undefined;
+    }
+    return Math.round(hours * 60);
+  }
+
+  const parsedMinutes = parseBreakMinutesInput(trimmed);
+  if (parsedMinutes === undefined || parsedMinutes <= 0) {
+    return undefined;
+  }
+
+  return parsedMinutes;
+}
+
+export function buildManualWorkedDurationPayload(dateKey: string, workedMinutes: number): ManualEditPayload | undefined {
+  if (!Number.isFinite(workedMinutes) || workedMinutes <= 0 || workedMinutes > 24 * 60) {
+    return undefined;
+  }
+
+  const startedAt = buildSeoulIso(dateKey, "00:00");
+  const endedAt = new Date(new Date(startedAt).getTime() + workedMinutes * MINUTE_MS).toISOString();
+
+  return {
+    dateKey,
+    endDateKey: getSeoulDateKey(new Date(endedAt)),
+    startedAt,
+    endedAt,
+    pausedMs: 0,
+    workedMs: workedMinutes * MINUTE_MS
+  };
+}
+
 export function buildManualEditPayloadWithBreak(
   dateKey: string,
   startTime: string,
@@ -590,6 +626,11 @@ function getSeoulDateParts(date: Date): { year: number; month: number; day: numb
     minute: Number(map.minute),
     weekday: weekdayMap[map.weekday] ?? 0
   };
+}
+
+export function isWeekendInSeoul(date: Date): boolean {
+  const { weekday } = getSeoulDateParts(date);
+  return weekday === 0 || weekday === 6;
 }
 
 function startOfSeoulWeek(date: Date): Date {
