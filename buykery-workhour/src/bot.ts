@@ -163,41 +163,31 @@ function htmlMessageOptions(): {
   };
 }
 
-function getTelegramErrorDescription(error: unknown): string {
-  const response = (error as { response?: { description?: string } }).response;
-  return response?.description?.toLowerCase() ?? "";
-}
-
 async function upsertStatusMessage(
   ctx: Context,
   store: FileStateStore,
   current: { key: string; session: UserSession; mention: string },
   html: string
 ): Promise<void> {
-  const messageId = current.session.lastStatusMessageId;
+  const previousMessageId = current.session.lastStatusMessageId;
   const options = htmlMessageOptions();
-
-  if (messageId) {
-    try {
-      await ctx.telegram.callApi("editMessageText", {
-        chat_id: current.session.chatId,
-        message_id: messageId,
-        text: html,
-        ...options
-      });
-      await store.upsertSession(current.key, current.session);
-      return;
-    } catch (error) {
-      if (getTelegramErrorDescription(error).includes("message is not modified")) {
-        await store.upsertSession(current.key, current.session);
-        return;
-      }
-    }
-  }
 
   const message = await ctx.reply(html, options);
   current.session.lastStatusMessageId = message.message_id;
   await store.upsertSession(current.key, current.session);
+
+  if (!previousMessageId || previousMessageId === message.message_id) {
+    return;
+  }
+
+  try {
+    await ctx.telegram.callApi("deleteMessage", {
+      chat_id: current.session.chatId,
+      message_id: previousMessageId
+    });
+  } catch {
+    // Ignore missing or already-deleted messages.
+  }
 }
 
 async function clearStatusMessage(

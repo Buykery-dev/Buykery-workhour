@@ -436,7 +436,7 @@ test("/bab alias switches status to lunch", async () => {
   }
 });
 
-test("status card is tracked during work and cleared on /end", async () => {
+test("status card is re-sent on updates and cleared on /end", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
   let restoreCallApi: (() => void) | undefined;
 
@@ -514,8 +514,10 @@ test("status card is tracked during work and cleared on /end", async () => {
     });
 
     session = store.getSession("100:200");
-    assert.ok(session?.lastStatusMessageId);
+    assert.equal(session?.lastStatusMessageId, 501);
     assert.equal(session?.shift?.currentStatus, "break");
+    assert.equal(calls.filter((method) => method === "sendMessage").length, 2);
+    assert.ok(calls.includes("deleteMessage"));
 
     await bot.handleUpdate({
       update_id: 12,
@@ -541,7 +543,7 @@ test("status card is tracked during work and cleared on /end", async () => {
     session = store.getSession("100:200");
     assert.equal(session?.lastStatusMessageId, undefined);
     assert.equal(session?.shift, undefined);
-    assert.ok(calls.includes("deleteMessage"));
+    assert.equal(calls.filter((method) => method === "deleteMessage").length, 2);
   } finally {
     restoreCallApi?.();
     await rm(tempDir, { recursive: true, force: true });
