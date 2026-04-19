@@ -14,13 +14,14 @@ function formatWeekLabel(windowStart: Date, windowEnd: Date): string {
 }
 
 export function startWeeklySummaryScheduler(bot: Telegraf, store: FileStateStore): NodeJS.Timeout {
-  const run = async (): Promise<void> => {
+  const run = async (): Promise<number> => {
     const now = new Date();
     const context = getWeeklyReportContext(now);
     if (!context.shouldSend) {
-      return;
+      return 0;
     }
 
+    let sentCount = 0;
     const chatIds = store.getKnownChatIds();
     for (const chatId of chatIds) {
       if (store.getWeeklyReportMarker(chatId, context.weekKey)) {
@@ -42,12 +43,25 @@ export function startWeeklySummaryScheduler(bot: Telegraf, store: FileStateStore
         }
       });
       await store.markWeeklyReportSent(chatId, context.weekKey, now.toISOString());
+      sentCount += 1;
+    }
+
+    return sentCount;
+  };
+
+  const runAndLog = async (): Promise<void> => {
+    const sentCount = await run();
+    if (sentCount > 0) {
+      console.log("Sent weekly summary reports:", sentCount);
     }
   };
 
-  void run();
+  void runAndLog().catch((error) => {
+    console.error("Weekly summary scheduler failed:", error);
+  });
+
   return setInterval(() => {
-    void run().catch((error) => {
+    void runAndLog().catch((error) => {
       console.error("Weekly summary scheduler failed:", error);
     });
   }, 30_000);
