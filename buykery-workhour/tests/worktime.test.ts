@@ -79,12 +79,28 @@ test("manual input parser accepts explicit dates", () => {
   assert.equal(parsed?.note, "외근");
 });
 
-test("weekly report context fires on Sunday 23:59 in Seoul", () => {
-  const context = getWeeklyReportContext(new Date("2026-03-29T14:59:00Z"));
+test("weekly report context fires on Monday after the Seoul week closes", () => {
+  const context = getWeeklyReportContext(new Date("2026-03-29T15:00:00Z"));
   assert.equal(context.shouldSend, true);
   assert.equal(context.weekKey, "2026-03-23");
   assert.equal(context.windowStart.toISOString(), "2026-03-22T15:00:00.000Z");
   assert.equal(context.windowEnd.toISOString(), "2026-03-29T14:59:59.999Z");
+});
+
+test("weekly report context keeps retrying on Monday if not marked sent", () => {
+  const context = getWeeklyReportContext(new Date("2026-03-30T05:30:00Z"));
+  assert.equal(context.shouldSend, true);
+  assert.equal(context.weekKey, "2026-03-23");
+  assert.equal(context.windowStart.toISOString(), "2026-03-22T15:00:00.000Z");
+  assert.equal(context.windowEnd.toISOString(), "2026-03-29T14:59:59.999Z");
+});
+
+test("weekly report context does not send before the Seoul week closes", () => {
+  const context = getWeeklyReportContext(new Date("2026-03-29T14:59:00Z"));
+  assert.equal(context.shouldSend, false);
+  assert.equal(context.weekKey, "2026-03-16");
+  assert.equal(context.windowStart.toISOString(), "2026-03-15T15:00:00.000Z");
+  assert.equal(context.windowEnd.toISOString(), "2026-03-22T14:59:59.999Z");
 });
 
 test("current week context starts at Monday 00:00 in Seoul", () => {
@@ -465,7 +481,10 @@ test("status card is re-sent on updates and cleared on /end", async () => {
       supports_inline_queries: false
     };
     Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
-    bot.context.reply = async () => ({ message_id: nextMessageId++ } as never);
+    bot.context.reply = async () => {
+      calls.push("reply");
+      return { message_id: nextMessageId++ } as never;
+    };
     bot.context.answerCbQuery = async () => true as never;
 
     await bot.handleUpdate({
@@ -516,7 +535,7 @@ test("status card is re-sent on updates and cleared on /end", async () => {
     session = store.getSession("100:200");
     assert.equal(session?.lastStatusMessageId, 501);
     assert.equal(session?.shift?.currentStatus, "break");
-    assert.equal(calls.filter((method) => method === "sendMessage").length, 2);
+    assert.equal(calls.filter((method) => method === "reply").length, 2);
     assert.ok(calls.includes("deleteMessage"));
 
     await bot.handleUpdate({

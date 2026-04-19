@@ -352,7 +352,7 @@ export function buildWeeklySummaryMessage(weekLabel: string, members: WeeklyMemb
   if (members.length === 0) {
     return [
       `📊 <b>${weekLabel} 주간 근무 리포트</b>`,
-      "이번 주에 집계된 근무 기록이 아직 없어요."
+      "지난 주에 집계된 근무 기록이 아직 없어요."
     ].join("\n");
   }
 
@@ -364,7 +364,7 @@ export function buildWeeklySummaryMessage(weekLabel: string, members: WeeklyMemb
 
   return [
     `📊 <b>${weekLabel} 주간 근무 리포트</b>`,
-    "일요일 23:59 기준, 이번 주 총 근무시간이에요.",
+    "KST 기준 지난 월요일 00:00부터 일요일 24:00까지의 총 근무시간이에요.",
     ...lines
   ].join("\n");
 }

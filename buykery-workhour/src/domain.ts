@@ -660,12 +660,12 @@ export function getWeeklyReportContext(now: Date): {
   windowEnd: Date;
 } {
   const parts = getSeoulDateParts(now);
-  const shouldSend = parts.weekday === 0 && parts.hour === 23 && parts.minute === 59;
-  const windowStart = startOfSeoulWeek(now);
-  const windowEnd = endOfSeoulDay(now);
+  const currentWeekStart = startOfSeoulWeek(now);
+  const windowStart = new Date(currentWeekStart.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const windowEnd = new Date(currentWeekStart.getTime() - 1);
 
   return {
-    shouldSend,
+    shouldSend: parts.weekday === 1,
     weekKey: getSeoulDateKey(windowStart),
     windowStart,
     windowEnd
