@@ -49,24 +49,44 @@ async function main(): Promise<void> {
     { command: "help", description: "도움말 보기" }
   ]);
 
-  process.once("SIGINT", () => bot.stop("SIGINT"));
-  process.once("SIGTERM", () => bot.stop("SIGTERM"));
-
-  await bot.launch({
-    dropPendingUpdates: true
-  });
-
   const deploymentNoticeConfig = await loadDeploymentNoticeConfig(appRootDir);
-  const sentDeploymentNotices = await sendDeploymentNotice(bot.telegram, store, deploymentNoticeConfig);
-  if (sentDeploymentNotices > 0) {
-    console.log("Sent deployment notices:", sentDeploymentNotices);
-  }
+  let weeklySummaryTimer: NodeJS.Timeout | undefined;
+  let postLaunchStarted = false;
 
-  const weeklySummaryTimer = startWeeklySummaryScheduler(bot, store);
-  process.once("SIGINT", () => clearInterval(weeklySummaryTimer));
-  process.once("SIGTERM", () => clearInterval(weeklySummaryTimer));
+  const stop = (reason: "SIGINT" | "SIGTERM"): void => {
+    if (weeklySummaryTimer) {
+      clearInterval(weeklySummaryTimer);
+    }
+    bot.stop(reason);
+  };
 
-  console.log(process.env.BOT_NAME ?? "Buykery 근태 텔레그램 봇", "is running");
+  process.once("SIGINT", () => stop("SIGINT"));
+  process.once("SIGTERM", () => stop("SIGTERM"));
+
+  await bot.launch(
+    {
+      dropPendingUpdates: true
+    },
+    () => {
+      if (postLaunchStarted) {
+        return;
+      }
+
+      postLaunchStarted = true;
+      void (async () => {
+        const sentDeploymentNotices = await sendDeploymentNotice(bot.telegram, store, deploymentNoticeConfig);
+        if (sentDeploymentNotices > 0) {
+          console.log("Sent deployment notices:", sentDeploymentNotices);
+        }
+
+        weeklySummaryTimer = startWeeklySummaryScheduler(bot, store);
+
+        console.log(process.env.BOT_NAME ?? "Buykery 근태 텔레그램 봇", "is running");
+      })().catch((error) => {
+        console.error("Post-launch tasks failed:", error);
+      });
+    }
+  );
 }
 
 main().catch((error) => {
