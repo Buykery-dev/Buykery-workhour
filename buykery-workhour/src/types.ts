@@ -7,6 +7,11 @@ export interface PauseRecord {
   note?: string;
 }
 
+export interface FocusWindow {
+  startedAt: string;
+  endedAt?: string;
+}
+
 export interface ManualAwayNote {
   from: string;
   to: string;
@@ -27,6 +32,7 @@ export interface ShiftState {
   pauseStartedAt?: string;
   totalPausedMs: number;
   pauses: PauseRecord[];
+  focusWindows: FocusWindow[];
   manualAwayNote?: ManualAwayNote;
   awayWindows: AwayWindow[];
 }
@@ -65,8 +71,10 @@ export interface CompletedShiftRecord {
   startedAt: string;
   endedAt: string;
   workedMs: number;
+  focusMs: number;
   pausedMs: number;
   pauses: PauseRecord[];
+  focusWindows: FocusWindow[];
   awayWindows: AwayWindow[];
 }
 

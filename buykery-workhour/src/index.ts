@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     { command: "lunch", description: "식사 중 (/bab도 가능)" },
     { command: "bab", description: "식사 중" },
     { command: "meeting", description: "회의 중" },
-    { command: "focus", description: "집중 작업 중" },
+    { command: "focus", description: "집중 근무 시간 기록" },
     { command: "outside", description: "외근 또는 이동 중" },
     { command: "manual", description: "시간대를 입력해서 부재 안내" },
     { command: "edit", description: "날짜별 근무 시간 수정" },

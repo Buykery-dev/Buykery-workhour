@@ -96,6 +96,7 @@ function normalizeSession(session: UserSession): UserSession {
     shift: session.shift
       ? {
           ...session.shift,
+          focusWindows: session.shift.focusWindows ?? [],
           awayWindows: session.shift.awayWindows ?? []
         }
       : undefined,
@@ -106,7 +107,9 @@ function normalizeSession(session: UserSession): UserSession {
 function normalizeCompletedShift(record: CompletedShiftRecord): CompletedShiftRecord {
   return {
     ...record,
+    focusMs: record.focusMs ?? 0,
     pauses: record.pauses ?? [],
+    focusWindows: record.focusWindows ?? [],
     awayWindows: record.awayWindows ?? []
   };
 }

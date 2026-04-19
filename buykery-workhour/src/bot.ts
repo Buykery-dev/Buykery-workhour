@@ -16,6 +16,7 @@ import {
   parseEditDateInput,
   parseManualInput,
   parseWorkedDurationInput,
+  setFocusStatus,
   setPausedStatus,
   sortSessionsForTeamView,
   trimActiveAwayWindow,
@@ -33,6 +34,7 @@ import {
   buildEditStartPrompt,
   buildEditWorkedSavedMessage,
   buildEndMessage,
+  buildFocusBlockedMessage,
   buildHelpMessage,
   buildManualParseError,
   buildManualPrompt,
@@ -109,6 +111,7 @@ function createActiveShiftFromEdit(startedAt: string): ShiftState {
     currentStatus: "working",
     totalPausedMs: 0,
     pauses: [],
+    focusWindows: [],
     awayWindows: []
   };
 }
@@ -232,6 +235,29 @@ async function handlePause(
   await upsertStatusMessage(ctx, store, current, buildPauseMessage(current.mention, status, result.mode));
 }
 
+async function handleFocus(ctx: Context, store: FileStateStore): Promise<void> {
+  const current = getSessionFromContext(ctx, store);
+  if (!current) {
+    return;
+  }
+
+  const now = new Date();
+  const result = setFocusStatus(current.session.shift, now);
+  if (result.mode === "missing" || !result.shift) {
+    await replyHtml(ctx, buildNoShiftMessage(current.mention));
+    return;
+  }
+
+  if (result.mode === "blocked") {
+    await replyHtml(ctx, buildFocusBlockedMessage(current.mention));
+    return;
+  }
+
+  current.session.shift = result.shift;
+  current.session.updatedAt = now.toISOString();
+  await upsertStatusMessage(ctx, store, current, buildPauseMessage(current.mention, "focus", result.mode === "noop" ? "noop" : "paused"));
+}
+
 export function createBot(token: string, store: FileStateStore): Telegraf {
   const bot = new Telegraf(token);
 
@@ -302,7 +328,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
   });
 
   bot.command("focus", async (ctx) => {
-    await handlePause(ctx, store, "focus");
+    await handleFocus(ctx, store);
   });
 
   bot.command("outside", async (ctx) => {
@@ -378,20 +404,21 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
 
     const now = new Date();
     const { windowStart, windowEnd } = getCurrentWeekContext(now);
-    const weeklyWorkedMs =
-      aggregateWeeklyTotals(
-        store.getCompletedShiftsByChat(current.session.chatId),
-        store.getSessionsByChat(current.session.chatId),
-        windowStart,
-        windowEnd
-      ).find((member) => member.chatId === current.session.chatId && member.userId === current.session.userId)?.workedMs ?? 0;
+    const weeklySummary = aggregateWeeklyTotals(
+      store.getCompletedShiftsByChat(current.session.chatId),
+      store.getSessionsByChat(current.session.chatId),
+      windowStart,
+      windowEnd
+    ).find((member) => member.chatId === current.session.chatId && member.userId === current.session.userId);
+    const weeklyWorkedMs = weeklySummary?.workedMs ?? 0;
+    const weeklyFocusMs = weeklySummary?.focusMs ?? 0;
 
     if (!current.session.shift) {
-      await upsertStatusMessage(ctx, store, current, buildIdleStatusMessage(current.mention, weeklyWorkedMs));
+      await upsertStatusMessage(ctx, store, current, buildIdleStatusMessage(current.mention, weeklyWorkedMs, weeklyFocusMs));
       return;
     }
 
-    await upsertStatusMessage(ctx, store, current, buildStatusMessage(current.mention, current.session.shift, now, weeklyWorkedMs));
+    await upsertStatusMessage(ctx, store, current, buildStatusMessage(current.mention, current.session.shift, now, weeklyWorkedMs, weeklyFocusMs));
   });
 
   bot.command("team", async (ctx) => {
@@ -431,8 +458,10 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       startedAt: result.shift?.startedAt ?? now.toISOString(),
       endedAt: now.toISOString(),
       workedMs: result.summary.workedMs,
+      focusMs: result.summary.focusMs,
       pausedMs: result.summary.totalPausedMs,
       pauses: result.shift?.pauses ?? [],
+      focusWindows: result.shift?.focusWindows ?? [],
       awayWindows: result.shift?.awayWindows ?? []
     });
     await store.upsertSession(current.key, current.session);
@@ -601,8 +630,10 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
       startedAt: payload.startedAt,
       endedAt: payload.endedAt,
       workedMs: payload.workedMs,
+      focusMs: 0,
       pausedMs: payload.pausedMs,
       pauses: [],
+      focusWindows: [],
       awayWindows: []
     };
 
@@ -719,8 +750,10 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
           startedAt: payload.startedAt,
           endedAt: payload.endedAt,
           workedMs: payload.workedMs,
+          focusMs: 0,
           pausedMs: 0,
           pauses: [],
+          focusWindows: [],
           awayWindows: []
         };
 
@@ -835,8 +868,10 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
         startedAt: payload.startedAt,
         endedAt: payload.endedAt,
         workedMs: payload.workedMs,
+        focusMs: 0,
         pausedMs: payload.pausedMs,
         pauses: [],
+        focusWindows: [],
         awayWindows: []
       };
 

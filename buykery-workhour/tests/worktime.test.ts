@@ -18,12 +18,13 @@ import {
   parseEditDateInput,
   parseManualInput,
   parseWorkedDurationInput,
+  setFocusStatus,
   setPausedStatus,
   startOrResumeShift
 } from "../src/domain.js";
 import { createBot } from "../src/bot.js";
 import { sendDeploymentNotice } from "../src/deployment.js";
-import { buildEndMessage, buildPauseMessage, buildStartMessage } from "../src/messages.js";
+import { buildEndMessage, buildPauseMessage, buildStartMessage, buildWeeklySummaryMessage } from "../src/messages.js";
 import { FileStateStore } from "../src/storage.js";
 
 function mockBotTelegramCallApi(
@@ -55,6 +56,65 @@ test("break time is excluded from worked duration", () => {
 
   assert.ok(ended.summary);
   assert.equal(ended.summary?.workedMs, 8.5 * 60 * 60 * 1000);
+});
+
+test("focus time is included in worked duration and tracked separately", () => {
+  const shift = createShift(new Date("2026-03-30T09:00:00+09:00"));
+
+  const focused = setFocusStatus(shift, new Date("2026-03-30T10:00:00+09:00"));
+  assert.equal(focused.mode, "focused");
+  assert.ok(focused.shift);
+
+  const resumed = startOrResumeShift(focused.shift, new Date("2026-03-30T12:00:00+09:00"));
+  assert.equal(resumed.mode, "resumed");
+
+  const ended = endShift(resumed.shift, new Date("2026-03-30T17:00:00+09:00"));
+  assert.ok(ended.summary);
+  assert.equal(ended.summary?.workedMs, 8 * 60 * 60 * 1000);
+  assert.equal(ended.summary?.focusMs, 2 * 60 * 60 * 1000);
+});
+
+test("focus cannot start while lunching before returning with back", () => {
+  const shift = createShift(new Date("2026-03-30T09:00:00+09:00"));
+  const lunch = setPausedStatus(shift, "lunch", new Date("2026-03-30T12:00:00+09:00"));
+  assert.ok(lunch.shift);
+
+  const focused = setFocusStatus(lunch.shift, new Date("2026-03-30T12:10:00+09:00"));
+  assert.equal(focused.mode, "blocked");
+  assert.equal(focused.blockingStatus, "lunch");
+  assert.equal(focused.shift?.currentStatus, "lunch");
+});
+
+test("focus time excludes overlapping manual away windows", () => {
+  const shift = createShift(new Date("2026-03-30T09:00:00+09:00"));
+  const focused = setFocusStatus(shift, new Date("2026-03-30T10:00:00+09:00"));
+  assert.ok(focused.shift);
+
+  focused.shift.awayWindows.push({
+    from: "2026-03-30T02:00:00.000Z",
+    to: "2026-03-30T03:00:00.000Z",
+    createdAt: "2026-03-30T02:00:00.000Z"
+  });
+
+  const ended = endShift(focused.shift, new Date("2026-03-30T13:00:00+09:00"));
+  assert.equal(ended.summary?.workedMs, 3 * 60 * 60 * 1000);
+  assert.equal(ended.summary?.focusMs, 2 * 60 * 60 * 1000);
+});
+
+test("meeting and outside return with back and are excluded from worked duration", () => {
+  for (const status of ["meeting", "outside"] as const) {
+    const shift = createShift(new Date("2026-03-30T09:00:00+09:00"));
+    const paused = setPausedStatus(shift, status, new Date("2026-03-30T10:00:00+09:00"));
+    assert.ok(paused.shift);
+
+    const resumed = startOrResumeShift(paused.shift, new Date("2026-03-30T11:00:00+09:00"));
+    assert.equal(resumed.mode, "resumed");
+    assert.equal(resumed.shift.currentStatus, "working");
+
+    const ended = endShift(resumed.shift, new Date("2026-03-30T13:00:00+09:00"));
+    assert.equal(ended.summary?.workedMs, 3 * 60 * 60 * 1000);
+    assert.equal(ended.summary?.totalPausedMs, 60 * 60 * 1000);
+  }
 });
 
 test("manual input parser accepts same-day ranges", () => {
@@ -120,8 +180,10 @@ test("weekly totals aggregate completed and active shifts", () => {
         startedAt: "2026-03-23T00:00:00.000Z",
         endedAt: "2026-03-25T09:00:00.000Z",
         workedMs: 3 * 60 * 60 * 1000,
+        focusMs: 0,
         pausedMs: 0,
         pauses: [],
+        focusWindows: [],
         awayWindows: []
       }
     ],
@@ -136,6 +198,7 @@ test("weekly totals aggregate completed and active shifts", () => {
           currentStatus: "working",
           totalPausedMs: 0,
           pauses: [],
+          focusWindows: [],
           awayWindows: []
         }
       }
@@ -160,8 +223,10 @@ test("weekly totals include early Monday hours in Seoul week", () => {
         startedAt: "2026-03-22T15:30:00.000Z",
         endedAt: "2026-03-22T16:30:00.000Z",
         workedMs: 60 * 60 * 1000,
+        focusMs: 0,
         pausedMs: 0,
         pauses: [],
+        focusWindows: [],
         awayWindows: []
       }
     ],
@@ -171,6 +236,40 @@ test("weekly totals include early Monday hours in Seoul week", () => {
   );
 
   assert.equal(totals[0]?.workedMs, 60 * 60 * 1000);
+});
+
+test("weekly totals and report message show focus time separately", () => {
+  const totals = aggregateWeeklyTotals(
+    [
+      {
+        chatId: 1,
+        userId: 10,
+        displayName: "Han",
+        startedAt: "2026-03-23T00:00:00.000Z",
+        endedAt: "2026-03-23T08:00:00.000Z",
+        workedMs: 8 * 60 * 60 * 1000,
+        focusMs: 2 * 60 * 60 * 1000,
+        pausedMs: 0,
+        pauses: [],
+        focusWindows: [
+          {
+            startedAt: "2026-03-23T01:00:00.000Z",
+            endedAt: "2026-03-23T03:00:00.000Z"
+          }
+        ],
+        awayWindows: []
+      }
+    ],
+    [],
+    new Date("2026-03-23T00:00:00.000Z"),
+    new Date("2026-03-29T14:59:59.999Z")
+  );
+
+  assert.equal(totals[0]?.workedMs, 8 * 60 * 60 * 1000);
+  assert.equal(totals[0]?.focusMs, 2 * 60 * 60 * 1000);
+
+  const message = buildWeeklySummaryMessage("3. 23. ~ 3. 29.", totals);
+  assert.match(message, /근무 <b>8시간<\/b> \/ 집중 <b>2시간<\/b>/);
 });
 
 test("worked time in range excludes pauses and clips by window", () => {
@@ -297,7 +396,7 @@ test("weekend start message includes weekend notice in Seoul", () => {
 test("weekend end message includes weekend closing note in Seoul", () => {
   const message = buildEndMessage(
     "<b>Han</b>",
-    { totalElapsedMs: 2 * 60 * 60 * 1000, totalPausedMs: 0, workedMs: 2 * 60 * 60 * 1000 },
+    { totalElapsedMs: 2 * 60 * 60 * 1000, totalPausedMs: 0, workedMs: 2 * 60 * 60 * 1000, focusMs: 0 },
     new Date("2026-04-05T02:00:00Z")
   );
   assert.match(message, /남은 주말 알차게, 행복하게 보내세요/);
@@ -327,6 +426,7 @@ test("/밥 alias switches status to lunch", async () => {
         currentStatus: "working",
         totalPausedMs: 0,
         pauses: [],
+        focusWindows: [],
         awayWindows: []
       },
       updatedAt: "2026-04-02T13:00:00.000Z"
@@ -398,6 +498,7 @@ test("/bab alias switches status to lunch", async () => {
         currentStatus: "working",
         totalPausedMs: 0,
         pauses: [],
+        focusWindows: [],
         awayWindows: []
       },
       updatedAt: "2026-04-02T13:00:00.000Z"
@@ -587,6 +688,7 @@ test("edit command preserves current shift state while opening pending edit flow
         currentStatus: "working",
         totalPausedMs: 0,
         pauses: [],
+        focusWindows: [],
         awayWindows: []
       },
       updatedAt: "2026-04-02T13:00:00.000Z"

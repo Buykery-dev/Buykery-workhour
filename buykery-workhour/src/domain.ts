@@ -1,9 +1,10 @@
-import type { AwayWindow, CompletedShiftRecord, ManualAwayNote, PauseRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
+import type { AwayWindow, CompletedShiftRecord, FocusWindow, ManualAwayNote, PauseRecord, ShiftState, UserSession, WorkStatus } from "./types.js";
 
 export interface ShiftSummary {
   totalElapsedMs: number;
   totalPausedMs: number;
   workedMs: number;
+  focusMs: number;
 }
 
 export interface WeeklyMemberSummary {
@@ -12,6 +13,7 @@ export interface WeeklyMemberSummary {
   displayName: string;
   username?: string;
   workedMs: number;
+  focusMs: number;
 }
 
 export interface ManualEditPayload {
@@ -231,12 +233,44 @@ export function calculateWorkedMsInRange(
   return Math.max(0, grossMs - pausedMs - awayMs);
 }
 
+export function calculateFocusMsInRange(
+  focusWindows: FocusWindow[] | undefined,
+  rangeStart: Date,
+  rangeEnd: Date,
+  fallbackEnd: Date,
+  pauses: PauseRecord[] = [],
+  awayWindows: AwayWindow[] = []
+): number {
+  const rangeStartMs = rangeStart.getTime();
+  const rangeEndMs = rangeEnd.getTime();
+  const fallbackEndMs = fallbackEnd.getTime();
+
+  return (focusWindows ?? []).reduce((sum, window) => {
+    const focusStart = new Date(window.startedAt).getTime();
+    const focusEnd = window.endedAt ? new Date(window.endedAt).getTime() : fallbackEndMs;
+    const focusMs = intersectMs(focusStart, focusEnd, rangeStartMs, rangeEndMs);
+    const pausedMs = pauses.reduce((pauseSum, pause) => {
+      const pauseStart = new Date(pause.startedAt).getTime();
+      const pauseEnd = pause.endedAt ? new Date(pause.endedAt).getTime() : fallbackEndMs;
+      return pauseSum + intersectMs(focusStart, focusEnd, Math.max(rangeStartMs, pauseStart), Math.min(rangeEndMs, pauseEnd));
+    }, 0);
+    const awayMs = awayWindows.reduce((awaySum, awayWindow) => {
+      const awayStart = new Date(awayWindow.from).getTime();
+      const awayEnd = new Date(awayWindow.to).getTime();
+      return awaySum + intersectMs(focusStart, focusEnd, Math.max(rangeStartMs, awayStart), Math.min(rangeEndMs, awayEnd));
+    }, 0);
+
+    return sum + Math.max(0, focusMs - pausedMs - awayMs);
+  }, 0);
+}
+
 const MINUTE_MS = 60_000;
 
 function cloneShift(shift: ShiftState): ShiftState {
   return {
     ...shift,
     pauses: shift.pauses.map((pause) => ({ ...pause })),
+    focusWindows: (shift.focusWindows ?? []).map((window) => ({ ...window })),
     manualAwayNote: shift.manualAwayNote ? { ...shift.manualAwayNote } : undefined,
     awayWindows: shift.awayWindows.map((window) => ({ ...window }))
   };
@@ -252,8 +286,16 @@ export function createShift(now: Date): ShiftState {
     currentStatus: "working",
     totalPausedMs: 0,
     pauses: [],
+    focusWindows: [],
     awayWindows: []
   };
+}
+
+function closeOpenFocusWindow(shift: ShiftState, now: Date): void {
+  const lastFocusWindow = shift.focusWindows[shift.focusWindows.length - 1];
+  if (lastFocusWindow && !lastFocusWindow.endedAt) {
+    lastFocusWindow.endedAt = now.toISOString();
+  }
 }
 
 export function startOrResumeShift(existing: ShiftState | undefined, now: Date): { shift: ShiftState; mode: "started" | "resumed" | "noop" } {
@@ -273,6 +315,10 @@ export function startOrResumeShift(existing: ShiftState | undefined, now: Date):
 
   const shift = cloneShift(existing);
 
+  if (shift.currentStatus === "focus") {
+    closeOpenFocusWindow(shift, now);
+  }
+
   if (shift.pauseStartedAt) {
     shift.totalPausedMs += Math.max(0, now.getTime() - new Date(shift.pauseStartedAt).getTime());
     const lastPause = shift.pauses[shift.pauses.length - 1];
@@ -286,6 +332,37 @@ export function startOrResumeShift(existing: ShiftState | undefined, now: Date):
   delete shift.manualAwayNote;
 
   return { shift, mode: "resumed" };
+}
+
+export function setFocusStatus(
+  existing: ShiftState | undefined,
+  now: Date
+): { shift?: ShiftState; mode: "focused" | "noop" | "missing" | "blocked"; blockingStatus?: Exclude<WorkStatus, "working" | "focus"> } {
+  if (!existing) {
+    return { mode: "missing" };
+  }
+
+  const shift = cloneShift(existing);
+
+  if (shift.currentStatus === "focus") {
+    return { shift, mode: "noop" };
+  }
+
+  const activeAwayWindow = getActiveAwayWindow(shift, now);
+  if (activeAwayWindow) {
+    return { shift, mode: "blocked", blockingStatus: "manual" };
+  }
+
+  if (shift.currentStatus !== "working") {
+    return { shift, mode: "blocked", blockingStatus: shift.currentStatus as Exclude<WorkStatus, "working" | "focus"> };
+  }
+
+  shift.currentStatus = "focus";
+  shift.focusWindows.push({
+    startedAt: now.toISOString()
+  });
+
+  return { shift, mode: "focused" };
 }
 
 export function setPausedStatus(
@@ -302,6 +379,18 @@ export function setPausedStatus(
 
   if (shift.currentStatus === status) {
     return { shift, mode: "noop" };
+  }
+
+  if (shift.currentStatus === "focus") {
+    closeOpenFocusWindow(shift, now);
+    shift.pauseStartedAt = now.toISOString();
+    shift.pauses.push({
+      status,
+      startedAt: now.toISOString(),
+      note
+    });
+    shift.currentStatus = status;
+    return { shift, mode: "paused" };
   }
 
   if (shift.currentStatus === "working") {
@@ -405,6 +494,7 @@ function calculateExcludedMsInRange(
 export function summarizeShift(shift: ShiftState, now: Date): ShiftSummary {
   const totalElapsedMs = Math.max(0, now.getTime() - new Date(shift.startedAt).getTime());
   const workedMs = calculateWorkedMsInRange(shift.startedAt, now.toISOString(), shift.pauses, shift.awayWindows, new Date(shift.startedAt), now);
+  const focusMs = calculateFocusMsInRange(shift.focusWindows, new Date(shift.startedAt), now, now, shift.pauses, shift.awayWindows);
   const totalPausedMs = calculateExcludedMsInRange(
     shift.startedAt,
     now.toISOString(),
@@ -417,7 +507,8 @@ export function summarizeShift(shift: ShiftState, now: Date): ShiftSummary {
   return {
     totalElapsedMs,
     totalPausedMs,
-    workedMs
+    workedMs,
+    focusMs
   };
 }
 
@@ -427,6 +518,10 @@ export function endShift(existing: ShiftState | undefined, now: Date): { summary
   }
 
   const shift = cloneShift(existing);
+  if (shift.currentStatus === "focus") {
+    closeOpenFocusWindow(shift, now);
+  }
+
   if (shift.pauseStartedAt) {
     shift.totalPausedMs += Math.max(0, now.getTime() - new Date(shift.pauseStartedAt).getTime());
     const lastPause = shift.pauses[shift.pauses.length - 1];
@@ -680,8 +775,15 @@ export function aggregateWeeklyTotals(
 ): WeeklyMemberSummary[] {
   const totals = new Map<string, WeeklyMemberSummary>();
 
-  const include = (chatId: number, userId: number, displayName: string, username: string | undefined, workedMs: number): void => {
-    if (workedMs <= 0) {
+  const include = (
+    chatId: number,
+    userId: number,
+    displayName: string,
+    username: string | undefined,
+    workedMs: number,
+    focusMs: number
+  ): void => {
+    if (workedMs <= 0 && focusMs <= 0) {
       return;
     }
 
@@ -689,6 +791,7 @@ export function aggregateWeeklyTotals(
     const current = totals.get(key);
     if (current) {
       current.workedMs += workedMs;
+      current.focusMs += focusMs;
       current.displayName = displayName;
       current.username = username;
       return;
@@ -699,17 +802,19 @@ export function aggregateWeeklyTotals(
       userId,
       displayName,
       username,
-      workedMs
+      workedMs,
+      focusMs
     });
   };
 
   for (const record of completedShifts) {
     const workedMs = calculateWorkedMsInRange(record.startedAt, record.endedAt, record.pauses, record.awayWindows, windowStart, windowEnd);
-    if (workedMs <= 0) {
+    const focusMs = calculateFocusMsInRange(record.focusWindows, windowStart, windowEnd, new Date(record.endedAt), record.pauses, record.awayWindows);
+    if (workedMs <= 0 && focusMs <= 0) {
       continue;
     }
 
-    include(record.chatId, record.userId, record.displayName, record.username, workedMs);
+    include(record.chatId, record.userId, record.displayName, record.username, workedMs, focusMs);
   }
 
   for (const session of sessions) {
@@ -731,7 +836,8 @@ export function aggregateWeeklyTotals(
       windowStart,
       windowEnd
     );
-    include(session.chatId, session.userId, session.displayName, session.username, workedMs);
+    const focusMs = calculateFocusMsInRange(session.shift.focusWindows, windowStart, windowEnd, cappedNow, session.shift.pauses, session.shift.awayWindows);
+    include(session.chatId, session.userId, session.displayName, session.username, workedMs, focusMs);
   }
 
   return [...totals.values()].sort((left, right) => {

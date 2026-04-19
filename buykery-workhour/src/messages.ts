@@ -37,7 +37,7 @@ export function buildWelcomeMessage(mention: string): string {
     "• /stop 잠깐 쉬는 중",
     "• /lunch 또는 /bab 식사 중",
     "• /meeting 회의 중",
-    "• /focus 집중 작업 중",
+    "• /focus 집중 근무 시간 기록",
     "• /outside 외근 중",
     "• /manual 시간대를 입력해서 부재 안내",
     "• /edit 날짜별 근무 시간 수정",
@@ -68,7 +68,7 @@ export function buildHelpMessage(): string {
     "회의 중이라 바로 응답이 어려운 상태를 남겨요.",
     "",
     "• /focus",
-    "집중 작업 중이라 알림 확인이 늦을 수 있을 때 써요.",
+    "근무시간에 포함되는 집중 작업 시간을 따로 기록해요. /back 으로 돌아와요.",
     "",
     "• /outside",
     "외근, 이동, 현장 대응처럼 자리 밖 업무일 때 써요.",
@@ -140,7 +140,7 @@ export function buildStartMessage(mention: string, now: Date, mode: "started" | 
   }
 
   if (mode === "resumed") {
-    return `🟢 ${formatDateTime(now)} ${mention} 잘 쉬고 왔어요. 다시 근무 시작!`;
+    return `🟢 ${formatDateTime(now)} ${mention} 다시 근무 중으로 돌아왔어요!`;
   }
 
   const weekendTone = isWeekendInSeoul(now) ? "\n주말에 출근이라니? Buykery는 대박나겠는걸요?" : "";
@@ -155,19 +155,24 @@ export function buildPauseMessage(mention: string, status: Exclude<WorkStatus, "
   return `${getStatusEmoji(status)} ${mention} 현재 상태는 <b>${getStatusLabel(status)}</b>이에요. ${statusTone(status)}`;
 }
 
+export function buildFocusBlockedMessage(mention: string): string {
+  return `⚠️ ${mention} 먼저 /back을 눌러 상태를 <b>근무 중</b>으로 변경해 주세요.`;
+}
+
 export function buildEndMessage(mention: string, summary: ShiftSummary, now: Date): string {
   return [
     `🏁 ${mention} 근무 종료!`,
     `• 총 경과 시간: ${formatDuration(summary.totalElapsedMs)}`,
     `• 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`,
     `• 실제 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`,
+    `• 집중 근무 시간: <b>${formatDuration(summary.focusMs)}</b>`,
     isWeekendInSeoul(now) ? "고생하셨어요. 남은 주말 알차게, 행복하게 보내세요." : undefined
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-export function buildStatusMessage(mention: string, shift: ShiftState, now: Date, weeklyWorkedMs: number): string {
+export function buildStatusMessage(mention: string, shift: ShiftState, now: Date, weeklyWorkedMs: number, weeklyFocusMs: number): string {
   const summary = summarizeShift(shift, now);
   const openPause = findOpenPause(shift);
   const effectiveStatus = getEffectiveStatus(shift, now);
@@ -185,8 +190,10 @@ export function buildStatusMessage(mention: string, shift: ShiftState, now: Date
     `${getStatusEmoji(effectiveStatus)} ${mention} 현재 상태는 <b>${getStatusLabel(effectiveStatus)}</b>이에요.`,
     `• 시작 시각: ${formatDateTime(new Date(shift.startedAt))}`,
     `• 누적 근무 시간: <b>${formatDuration(summary.workedMs)}</b>`,
+    `• 집중 근무 시간: <b>${formatDuration(summary.focusMs)}</b>`,
     `• 누적 쉬는 시간: ${formatDuration(summary.totalPausedMs)}`,
-    `• 이번 주 누적 근무 시간: <b>${formatDuration(weeklyWorkedMs)}</b>`
+    `• 이번 주 누적 근무 시간: <b>${formatDuration(weeklyWorkedMs)}</b>`,
+    `• 이번 주 집중 근무 시간: <b>${formatDuration(weeklyFocusMs)}</b>`
   ];
 
   if (noteLine) {
@@ -200,10 +207,11 @@ export function buildNoShiftMessage(mention: string): string {
   return `🌙 ${mention} 아직 시작된 근무가 없어요. /start 로 근무를 시작해 주세요.`;
 }
 
-export function buildIdleStatusMessage(mention: string, weeklyWorkedMs: number): string {
+export function buildIdleStatusMessage(mention: string, weeklyWorkedMs: number, weeklyFocusMs: number): string {
   return [
     `🌙 ${mention} 현재 진행 중인 근무는 없어요.`,
-    `• 이번 주 누적 근무 시간: <b>${formatDuration(weeklyWorkedMs)}</b>`
+    `• 이번 주 누적 근무 시간: <b>${formatDuration(weeklyWorkedMs)}</b>`,
+    `• 이번 주 집중 근무 시간: <b>${formatDuration(weeklyFocusMs)}</b>`
   ].join("\n");
 }
 
@@ -342,7 +350,7 @@ export function buildTeamStatusMessage(sessions: UserSession[], now: Date): stri
 
     const summary = summarizeShift(session.shift, now);
     const effectiveStatus = getEffectiveStatus(session.shift, now);
-    return `• ${getStatusEmoji(effectiveStatus)} ${mention} : ${getStatusLabel(effectiveStatus)} / ${formatDuration(summary.workedMs)}`;
+    return `• ${getStatusEmoji(effectiveStatus)} ${mention} : ${getStatusLabel(effectiveStatus)} / 근무 ${formatDuration(summary.workedMs)} / 집중 ${formatDuration(summary.focusMs)}`;
   });
 
   return ["👥 <b>Buykery 팀 상태 보드</b>", ...body].join("\n");
@@ -359,7 +367,7 @@ export function buildWeeklySummaryMessage(weekLabel: string, members: WeeklyMemb
   const lines = members.map((member, index) => {
     const medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "•";
     const name = createMention(member.userId, member.displayName);
-    return `${medal} ${name} : <b>${formatDuration(member.workedMs)}</b>`;
+    return `${medal} ${name} : 근무 <b>${formatDuration(member.workedMs)}</b> / 집중 <b>${formatDuration(member.focusMs)}</b>`;
   });
 
   return [
