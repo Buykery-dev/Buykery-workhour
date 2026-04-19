@@ -158,6 +158,13 @@ export class FileStateStore {
       .map((session) => structuredClone(session));
   }
 
+  getSessionEntries(): Array<{ key: string; session: UserSession }> {
+    return Object.entries(this.state.sessions).map(([key, session]) => ({
+      key,
+      session: structuredClone(session)
+    }));
+  }
+
   getCompletedShiftsByChat(chatId: number): CompletedShiftRecord[] {
     return this.state.completedShifts
       .filter((record) => record.chatId === chatId)

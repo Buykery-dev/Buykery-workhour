@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBot } from "./bot.js";
 import { loadDeploymentNoticeConfig, sendDeploymentNotice } from "./deployment.js";
-import { startWeeklySummaryScheduler } from "./scheduler.js";
+import { startFocusPraiseScheduler, startWeeklySummaryScheduler } from "./scheduler.js";
 import { FileStateStore } from "./storage.js";
 
 process.env.TZ = process.env.TZ ?? "Asia/Seoul";
@@ -51,11 +51,15 @@ async function main(): Promise<void> {
 
   const deploymentNoticeConfig = await loadDeploymentNoticeConfig(appRootDir);
   let weeklySummaryTimer: NodeJS.Timeout | undefined;
+  let focusPraiseTimer: NodeJS.Timeout | undefined;
   let postLaunchStarted = false;
 
   const stop = (reason: "SIGINT" | "SIGTERM"): void => {
     if (weeklySummaryTimer) {
       clearInterval(weeklySummaryTimer);
+    }
+    if (focusPraiseTimer) {
+      clearInterval(focusPraiseTimer);
     }
     bot.stop(reason);
   };
@@ -80,6 +84,7 @@ async function main(): Promise<void> {
         }
 
         weeklySummaryTimer = startWeeklySummaryScheduler(bot, store);
+        focusPraiseTimer = startFocusPraiseScheduler(bot, store);
 
         console.log(process.env.BOT_NAME ?? "Buykery 근태 텔레그램 봇", "is running");
       })().catch((error) => {

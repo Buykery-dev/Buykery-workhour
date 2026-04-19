@@ -68,7 +68,7 @@ export function buildHelpMessage(): string {
     "회의 중이라 바로 응답이 어려운 상태를 남겨요.",
     "",
     "• /focus",
-    "근무시간에 포함되는 집중 작업 시간을 따로 기록해요. /back 으로 돌아와요.",
+    "근무시간에 포함되는 집중 작업 시간을 따로 기록해요. /back 으로 돌아오고, 1시간마다 칭찬 메시지를 보내요.",
     "",
     "• /outside",
     "외근, 이동, 현장 대응처럼 자리 밖 업무일 때 써요.",
@@ -157,6 +157,79 @@ export function buildPauseMessage(mention: string, status: Exclude<WorkStatus, "
 
 export function buildFocusBlockedMessage(mention: string): string {
   return `⚠️ ${mention} 먼저 /back을 눌러 상태를 <b>근무 중</b>으로 변경해 주세요.`;
+}
+
+function getFocusPraiseTone(hour: number): { mood: "bright" | "strong" | "careful" | "worried"; fire: string } {
+  if (hour >= 21) {
+    return { mood: "worried", fire: "🔥" };
+  }
+
+  if (hour >= 13) {
+    return { mood: "careful", fire: "🔥🔥" };
+  }
+
+  if (hour >= 5) {
+    return { mood: "strong", fire: "🔥🔥🔥" };
+  }
+
+  return { mood: "bright", fire: "🔥🔥🔥" };
+}
+
+export function buildFocusPraiseMessage(mention: string, hour: number, variantIndex = Math.floor(Math.random() * 10)): string {
+  const cappedHour = Math.min(Math.max(1, hour), 24);
+  const { mood, fire } = getFocusPraiseTone(cappedHour);
+  const variants: Record<typeof mood, string[]> = {
+    bright: [
+      `집중 근무 ${cappedHour}시간째예요 ${fire}`,
+      `흐름 좋아요. 집중 근무 ${cappedHour}시간 돌파! ${fire}`,
+      `몰입력이 반짝반짝해요. 집중 ${cappedHour}시간째입니다 ${fire}`,
+      `좋은 페이스예요. 집중 근무 ${cappedHour}시간째! ${fire}`,
+      `지금 집중력 꽤 멋진데요? ${cappedHour}시간째예요 ${fire}`,
+      `Buykery 엔진이 잘 돌고 있어요. 집중 ${cappedHour}시간째 ${fire}`,
+      `방해 금지 모드 제대로네요. 집중 ${cappedHour}시간째! ${fire}`,
+      `오늘 몰입 좋습니다. 집중 근무 ${cappedHour}시간째 ${fire}`,
+      `차곡차곡 쌓이고 있어요. 집중 ${cappedHour}시간째예요 ${fire}`,
+      `멋져요. 집중 근무 ${cappedHour}시간을 지나고 있어요 ${fire}`
+    ],
+    strong: [
+      `집중 근무 ${cappedHour}시간째예요. 이 정도면 몰입 장인입니다 ${fire}`,
+      `${cappedHour}시간 집중 중이에요. 대단하지만 물도 한 모금 챙겨요 ${fire}`,
+      `깊게 들어갔네요. 집중 ${cappedHour}시간째입니다 ${fire}`,
+      `집중력이 오래가고 있어요. ${cappedHour}시간째예요 ${fire}`,
+      `Buykery 추진력 좋습니다. 집중 ${cappedHour}시간째 ${fire}`,
+      `와, ${cappedHour}시간 집중 중이에요. 멋지고 든든합니다 ${fire}`,
+      `몰입 곡선이 예뻐요. 집중 근무 ${cappedHour}시간째 ${fire}`,
+      `${cappedHour}시간째 집중 중. 성과가 차곡차곡 쌓이고 있어요 ${fire}`,
+      `지금 꽤 긴 집중입니다. ${cappedHour}시간째, 멋져요 ${fire}`,
+      `집중 근무 ${cappedHour}시간 돌파. 이 페이스, 기록감이에요 ${fire}`
+    ],
+    careful: [
+      `집중 근무 ${cappedHour}시간째예요. 멋진데, 눈과 어깨도 한 번 풀어 주세요 ${fire}`,
+      `${cappedHour}시간 집중 중입니다. 성과도 좋지만 몸도 같이 챙겨요 ${fire}`,
+      `몰입이 길어졌어요. 집중 ${cappedHour}시간째, 잠깐 스트레칭 어때요? ${fire}`,
+      `집중 근무 ${cappedHour}시간째입니다. 대단하지만 무리하지 않기로 해요 ${fire}`,
+      `${cappedHour}시간째 집중 중. 물, 자세, 호흡 한 번 체크해요 ${fire}`,
+      `아직 집중 중이에요. ${cappedHour}시간째, 진짜 대단해요. 잠깐 쉬어도 괜찮아요 ${fire}`,
+      `Buykery 열정 인정. 집중 ${cappedHour}시간째, 몸도 같이 데려가요 ${fire}`,
+      `집중 근무 ${cappedHour}시간째. 멋지지만 너무 오래 앉아 있진 않았죠? ${fire}`,
+      `${cappedHour}시간 몰입 중입니다. 성과 좋고, 컨디션도 지켜요 ${fire}`,
+      `집중력이 오래 버텨주네요. ${cappedHour}시간째, 잠깐 기지개 추천해요 ${fire}`
+    ],
+    worried: [
+      `집중 근무 ${cappedHour}시간째예요. 이제는 진심으로 건강이 먼저예요 ${fire}`,
+      `${cappedHour}시간 집중 중입니다. 대단하지만, 잠깐 멈추고 몸 상태 확인해 주세요 ${fire}`,
+      `몰입이 아주 길어졌어요. 집중 ${cappedHour}시간째, 무리하면 안 돼요 ${fire}`,
+      `집중 근무 ${cappedHour}시간째입니다. 성과보다 사람이 먼저예요 ${fire}`,
+      `${cappedHour}시간째 집중 중. 물 마시고, 눈 쉬고, 가능하면 잠깐 일어나요 ${fire}`,
+      `진짜 오래 집중했어요. ${cappedHour}시간째, 이제는 쉬는 것도 일입니다 ${fire}`,
+      `Buykery는 소중하지만 우리 몸도 소중해요. 집중 ${cappedHour}시간째입니다 ${fire}`,
+      `집중 근무 ${cappedHour}시간째. 이건 칭찬 반, 걱정 반이에요 ${fire}`,
+      `${cappedHour}시간 몰입 중입니다. 혹시 식사나 수면을 놓친 건 아닌지 확인해요 ${fire}`,
+      `집중력이 엄청나요. ${cappedHour}시간째라서, 이제는 꼭 컨디션부터 챙겨 주세요 ${fire}`
+    ]
+  };
+  const selected = variants[mood][variantIndex % variants[mood].length];
+  return `🎧 ${mention} ${selected}`;
 }
 
 export function buildEndMessage(mention: string, summary: ShiftSummary, now: Date): string {

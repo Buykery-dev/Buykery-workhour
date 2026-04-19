@@ -78,6 +78,8 @@ function getSessionFromContext(ctx: Context, store: FileStateStore): { key: stri
       username: ctx.from.username,
       shift: existing?.shift,
       lastStatusMessageId: existing?.lastStatusMessageId,
+      focusPraiseMessageId: existing?.focusPraiseMessageId,
+      focusPraiseLastHour: existing?.focusPraiseLastHour,
       pendingManual: existing?.pendingManual,
       pendingEdit: existing?.pendingEdit,
       updatedAt: new Date().toISOString()
@@ -213,6 +215,25 @@ async function clearStatusMessage(
   delete current.session.lastStatusMessageId;
 }
 
+async function clearFocusPraiseMessage(
+  ctx: Context,
+  current: { key: string; session: UserSession; mention: string }
+): Promise<void> {
+  if (current.session.focusPraiseMessageId) {
+    try {
+      await ctx.telegram.callApi("deleteMessage", {
+        chat_id: current.session.chatId,
+        message_id: current.session.focusPraiseMessageId
+      });
+    } catch {
+      // Ignore missing or already-deleted praise messages.
+    }
+  }
+
+  delete current.session.focusPraiseMessageId;
+  delete current.session.focusPraiseLastHour;
+}
+
 async function handlePause(
   ctx: Context,
   store: FileStateStore,
@@ -224,6 +245,7 @@ async function handlePause(
   }
 
   const now = new Date();
+  const wasFocus = current.session.shift?.currentStatus === "focus";
   const result = setPausedStatus(current.session.shift, status, now);
   if (result.mode === "missing" || !result.shift) {
     await replyHtml(ctx, buildNoShiftMessage(current.mention));
@@ -232,6 +254,9 @@ async function handlePause(
 
   current.session.shift = result.shift;
   current.session.updatedAt = now.toISOString();
+  if (wasFocus && result.shift.currentStatus !== "focus") {
+    await clearFocusPraiseMessage(ctx, current);
+  }
   await upsertStatusMessage(ctx, store, current, buildPauseMessage(current.mention, status, result.mode));
 }
 
@@ -254,6 +279,10 @@ async function handleFocus(ctx: Context, store: FileStateStore): Promise<void> {
   }
 
   current.session.shift = result.shift;
+  if (result.mode === "focused") {
+    delete current.session.focusPraiseMessageId;
+    delete current.session.focusPraiseLastHour;
+  }
   current.session.updatedAt = now.toISOString();
   await upsertStatusMessage(ctx, store, current, buildPauseMessage(current.mention, "focus", result.mode === "noop" ? "noop" : "paused"));
 }
@@ -280,10 +309,14 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     }
 
     const now = new Date();
+    const wasFocus = current.session.shift?.currentStatus === "focus";
     const result = startOrResumeShift(current.session.shift ? trimActiveAwayWindow(current.session.shift, now) : undefined, now);
     current.session.shift = result.shift;
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
+    if (wasFocus && result.shift.currentStatus !== "focus") {
+      await clearFocusPraiseMessage(ctx, current);
+    }
 
     await upsertStatusMessage(ctx, store, current, buildStartMessage(current.mention, now, result.mode));
   });
@@ -295,10 +328,14 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     }
 
     const now = new Date();
+    const wasFocus = current.session.shift?.currentStatus === "focus";
     const result = startOrResumeShift(current.session.shift ? trimActiveAwayWindow(current.session.shift, now) : undefined, now);
     current.session.shift = result.shift;
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
+    if (wasFocus && result.shift.currentStatus !== "focus") {
+      await clearFocusPraiseMessage(ctx, current);
+    }
 
     await upsertStatusMessage(ctx, store, current, buildStartMessage(current.mention, now, result.mode));
   });
@@ -449,6 +486,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     delete current.session.pendingManual;
     current.session.updatedAt = now.toISOString();
     await clearStatusMessage(ctx, current);
+    await clearFocusPraiseMessage(ctx, current);
 
     await store.appendCompletedShift({
       chatId: current.session.chatId,

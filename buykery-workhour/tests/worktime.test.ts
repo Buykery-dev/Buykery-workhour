@@ -24,7 +24,8 @@ import {
 } from "../src/domain.js";
 import { createBot } from "../src/bot.js";
 import { sendDeploymentNotice } from "../src/deployment.js";
-import { buildEndMessage, buildPauseMessage, buildStartMessage, buildWeeklySummaryMessage } from "../src/messages.js";
+import { buildEndMessage, buildFocusPraiseMessage, buildPauseMessage, buildStartMessage, buildWeeklySummaryMessage } from "../src/messages.js";
+import { runFocusPraiseSweep } from "../src/scheduler.js";
 import { FileStateStore } from "../src/storage.js";
 
 function mockBotTelegramCallApi(
@@ -270,6 +271,14 @@ test("weekly totals and report message show focus time separately", () => {
 
   const message = buildWeeklySummaryMessage("3. 23. ~ 3. 29.", totals);
   assert.match(message, /근무 <b>8시간<\/b> \/ 집중 <b>2시간<\/b>/);
+});
+
+test("focus praise message changes tone for long focus sessions", () => {
+  const early = buildFocusPraiseMessage("Han", 1, 0);
+  const late = buildFocusPraiseMessage("Han", 24, 0);
+
+  assert.match(early, /집중 근무 1시간/);
+  assert.match(late, /건강이 먼저/);
 });
 
 test("worked time in range excludes pauses and clips by window", () => {
@@ -664,6 +673,146 @@ test("status card is re-sent on updates and cleared on /end", async () => {
     assert.equal(session?.lastStatusMessageId, undefined);
     assert.equal(session?.shift, undefined);
     assert.equal(calls.filter((method) => method === "deleteMessage").length, 2);
+  } finally {
+    restoreCallApi?.();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("focus praise sweep sends hourly praise and replaces previous message", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    await store.upsertSession("100:200", {
+      chatId: 100,
+      userId: 200,
+      displayName: "Han",
+      username: "han",
+      shift: {
+        startedAt: "2026-04-20T00:00:00.000Z",
+        currentStatus: "focus",
+        totalPausedMs: 0,
+        pauses: [],
+        focusWindows: [{ startedAt: "2026-04-20T01:00:00.000Z" }],
+        awayWindows: []
+      },
+      updatedAt: "2026-04-20T01:00:00.000Z"
+    });
+
+    const sentMessages: Array<{ chatId: number; text: string }> = [];
+    const deletedMessages: Array<{ chatId: number; messageId: number }> = [];
+    let nextMessageId = 900;
+    const telegram = {
+      sendMessage: async (chatId: number, text: string) => {
+        sentMessages.push({ chatId, text });
+        return { message_id: nextMessageId++, text, date: 0, chat: { id: chatId, type: "group", title: "QA" } } as never;
+      },
+      deleteMessage: async (chatId: number, messageId: number) => {
+        deletedMessages.push({ chatId, messageId });
+        return true as const;
+      }
+    };
+
+    const firstCount = await runFocusPraiseSweep(telegram, store, new Date("2026-04-20T02:00:00.000Z"));
+    const duplicateCount = await runFocusPraiseSweep(telegram, store, new Date("2026-04-20T02:30:00.000Z"));
+    const secondCount = await runFocusPraiseSweep(telegram, store, new Date("2026-04-20T03:05:00.000Z"));
+
+    const session = store.getSession("100:200");
+    assert.equal(firstCount, 1);
+    assert.equal(duplicateCount, 0);
+    assert.equal(secondCount, 1);
+    assert.equal(sentMessages.length, 2);
+    assert.match(sentMessages[0]?.text ?? "", /1시간/);
+    assert.match(sentMessages[1]?.text ?? "", /2시간/);
+    assert.deepEqual(deletedMessages, [{ chatId: 100, messageId: 900 }]);
+    assert.equal(session?.focusPraiseMessageId, 901);
+    assert.equal(session?.focusPraiseLastHour, 2);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("back from focus clears praise message", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    await store.upsertSession("100:200", {
+      chatId: 100,
+      userId: 200,
+      displayName: "Han",
+      username: "han",
+      shift: {
+        startedAt: "2026-04-20T00:00:00.000Z",
+        currentStatus: "focus",
+        totalPausedMs: 0,
+        pauses: [],
+        focusWindows: [{ startedAt: "2026-04-20T00:30:00.000Z" }],
+        awayWindows: []
+      },
+      focusPraiseMessageId: 777,
+      focusPraiseLastHour: 1,
+      updatedAt: "2026-04-20T00:30:00.000Z"
+    });
+
+    const deletedMessageIds: number[] = [];
+    let nextMessageId = 800;
+    const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      const method = String(args[0]);
+      const payload = args[1] as { message_id?: number };
+      if (method === "deleteMessage" && payload.message_id) {
+        deletedMessageIds.push(payload.message_id);
+      }
+      if (method === "sendMessage") {
+        return { message_id: nextMessageId++ };
+      }
+      return true;
+    });
+    bot.botInfo = {
+      id: 999,
+      is_bot: true,
+      first_name: "Test",
+      username: "test_bot",
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
+    bot.context.reply = async () => ({ message_id: nextMessageId++ } as never);
+
+    await bot.handleUpdate({
+      update_id: 40,
+      message: {
+        message_id: 41,
+        date: Math.floor(new Date("2026-04-20T10:00:00+09:00").getTime() / 1000),
+        text: "/back",
+        chat: {
+          id: 100,
+          type: "group",
+          title: "QA"
+        },
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        entities: [{ type: "bot_command", offset: 0, length: 5 }]
+      }
+    });
+
+    const session = store.getSession("100:200");
+    assert.equal(session?.shift?.currentStatus, "working");
+    assert.equal(session?.focusPraiseMessageId, undefined);
+    assert.equal(session?.focusPraiseLastHour, undefined);
+    assert.ok(deletedMessageIds.includes(777));
   } finally {
     restoreCallApi?.();
     await rm(tempDir, { recursive: true, force: true });

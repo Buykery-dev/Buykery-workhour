@@ -58,6 +58,8 @@ export interface UserSession {
   username?: string;
   shift?: ShiftState;
   lastStatusMessageId?: number;
+  focusPraiseMessageId?: number;
+  focusPraiseLastHour?: number;
   pendingManual?: PendingManualInput;
   pendingEdit?: PendingEditInput;
   updatedAt: string;
