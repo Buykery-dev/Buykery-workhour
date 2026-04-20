@@ -234,6 +234,28 @@ async function clearFocusPraiseMessage(
   delete current.session.focusPraiseLastHour;
 }
 
+async function deleteBotMessage(ctx: Context, chatId: number, messageId: number | undefined): Promise<void> {
+  if (!messageId) {
+    return;
+  }
+
+  try {
+    await ctx.telegram.callApi("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId
+    });
+  } catch {
+    // Ignore missing or already-deleted helper messages.
+  }
+}
+
+async function clearEditHelperMessages(
+  ctx: Context,
+  current: { key: string; session: UserSession; mention: string }
+): Promise<void> {
+  await deleteBotMessage(ctx, current.session.chatId, current.session.pendingEdit?.ongoingButtonMessageId);
+}
+
 async function handlePause(
   ctx: Context,
   store: FileStateStore,
@@ -633,6 +655,7 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
     }
 
     const startedAt = `${selectedDate}T${startTime}:00+09:00`;
+    await clearEditHelperMessages(ctx, current);
     current.session.shift = createActiveShiftFromEdit(startedAt);
     delete current.session.pendingEdit;
     current.session.updatedAt = new Date().toISOString();
@@ -833,15 +856,18 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
           }
         });
 
+        let ongoingButtonMessageId: number | undefined;
         if (isTodayDateKey(pendingEdit.selectedDate, now)) {
-          await ctx.reply("퇴근 전이면 아래 버튼으로 현재 근무 중 상태로 저장할 수 있어요.", {
+          const buttonMessage = await ctx.reply("아직 퇴근 전이면 아래 버튼으로 현재 근무 중 상태로 저장할 수 있어요.", {
             ...Markup.inlineKeyboard([[Markup.button.callback("현재 근무 중", "edit:end:ongoing")]])
           });
+          ongoingButtonMessageId = buttonMessage.message_id;
         }
 
         current.session.pendingEdit = {
           step: "end",
           promptMessageId: prompt.message_id,
+          ongoingButtonMessageId,
           createdAt: now.toISOString(),
           selectedDate: pendingEdit.selectedDate,
           startTime

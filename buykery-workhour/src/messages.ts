@@ -352,8 +352,7 @@ export function buildEditEndPrompt(mention: string, dateKey: string, startTime: 
     `🕕 ${mention} <b>${dateKey}</b>의 퇴근 시간을 입력해 주세요.`,
     `현재 출근 시간: <code>${startTime}</code>`,
     "예: <code>18:30</code>",
-    "자정을 넘긴 퇴근은 <code>08:00</code>처럼 입력하면 다음 날로 처리돼요.",
-    "오늘 날짜라면 아래 버튼으로 <b>현재 근무 중</b> 상태로 저장할 수도 있어요."
+    "자정을 넘긴 퇴근은 <code>08:00</code>처럼 입력하면 다음 날로 처리돼요."
   ].join("\n");
 }
 

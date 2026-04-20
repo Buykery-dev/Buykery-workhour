@@ -45,6 +45,7 @@ export interface PendingManualInput {
 export interface PendingEditInput {
   step: "date" | "worked" | "start" | "end" | "break";
   promptMessageId: number;
+  ongoingButtonMessageId?: number;
   createdAt: string;
   selectedDate?: string;
   startTime?: string;

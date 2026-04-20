@@ -24,7 +24,14 @@ import {
 } from "../src/domain.js";
 import { createBot } from "../src/bot.js";
 import { sendDeploymentNotice } from "../src/deployment.js";
-import { buildEndMessage, buildFocusPraiseMessage, buildPauseMessage, buildStartMessage, buildWeeklySummaryMessage } from "../src/messages.js";
+import {
+  buildEditEndPrompt,
+  buildEndMessage,
+  buildFocusPraiseMessage,
+  buildPauseMessage,
+  buildStartMessage,
+  buildWeeklySummaryMessage
+} from "../src/messages.js";
 import { runFocusPraiseSweep } from "../src/scheduler.js";
 import { FileStateStore } from "../src/storage.js";
 
@@ -421,6 +428,12 @@ test("focus message warns focus time cannot be edited later", () => {
   const message = buildPauseMessage("Hanvenue", "focus", "paused");
   assert.match(message, /나중에 수정할 수 없으니/);
   assert.match(message, /\/focusout/);
+});
+
+test("edit end prompt avoids duplicate ongoing button guidance", () => {
+  const message = buildEditEndPrompt("Hanvenue", "2026-04-20", "04:30");
+  assert.match(message, /퇴근 시간을 입력/);
+  assert.doesNotMatch(message, /현재 근무 중/);
 });
 
 test("/밥 alias switches status to lunch", async () => {
@@ -984,6 +997,90 @@ test("past-date edit switches to worked-duration flow", async () => {
     const session = store.getSession("100:200");
     assert.equal(session?.pendingEdit?.step, "worked");
     assert.equal(session?.pendingEdit?.selectedDate, "2026-04-01");
+  } finally {
+    restoreCallApi?.();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("ongoing edit button clears stale helper message", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
+  let restoreCallApi: (() => void) | undefined;
+
+  try {
+    const store = new FileStateStore(path.join(tempDir, "events.csv"));
+    await store.load();
+
+    await store.upsertSession("100:200", {
+      chatId: 100,
+      userId: 200,
+      displayName: "Han",
+      username: "han",
+      pendingEdit: {
+        step: "end",
+        promptMessageId: 700,
+        ongoingButtonMessageId: 701,
+        createdAt: "2026-04-20T00:00:00.000Z",
+        selectedDate: "2026-04-20",
+        startTime: "04:30"
+      },
+      updatedAt: "2026-04-20T00:00:00.000Z"
+    });
+
+    const deletedMessageIds: number[] = [];
+    const bot = createBot("test-token", store);
+    restoreCallApi = mockBotTelegramCallApi(bot, async (...args: unknown[]) => {
+      const method = String(args[0]);
+      const payload = args[1] as { message_id?: number };
+      if (method === "deleteMessage" && payload.message_id) {
+        deletedMessageIds.push(payload.message_id);
+      }
+      if (method === "sendMessage") {
+        return { message_id: 777 };
+      }
+      return true;
+    });
+    bot.botInfo = {
+      id: 999,
+      is_bot: true,
+      first_name: "Test",
+      username: "test_bot",
+      can_join_groups: true,
+      can_read_all_group_messages: false,
+      supports_inline_queries: false
+    };
+    Object.defineProperty(bot.context, "telegram", { value: bot.telegram });
+    bot.context.reply = async () => ({ message_id: 777 } as never);
+    bot.context.answerCbQuery = async () => true as never;
+
+    await bot.handleUpdate({
+      update_id: 41,
+      callback_query: {
+        id: "callback-1",
+        chat_instance: "chat-instance",
+        data: "edit:end:ongoing",
+        from: {
+          id: 200,
+          is_bot: false,
+          first_name: "Han",
+          username: "han"
+        },
+        message: {
+          message_id: 701,
+          date: Math.floor(new Date("2026-04-20T09:11:00+09:00").getTime() / 1000),
+          chat: {
+            id: 100,
+            type: "group",
+            title: "QA"
+          }
+        } as never
+      }
+    });
+
+    const session = store.getSession("100:200");
+    assert.equal(session?.pendingEdit, undefined);
+    assert.equal(session?.shift?.currentStatus, "working");
+    assert.ok(deletedMessageIds.includes(701));
   } finally {
     restoreCallApi?.();
     await rm(tempDir, { recursive: true, force: true });
