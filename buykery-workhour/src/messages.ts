@@ -38,6 +38,7 @@ export function buildWelcomeMessage(mention: string): string {
     "• /lunch 또는 /bab 식사 중",
     "• /meeting 회의 중",
     "• /focus 집중 근무 시간 기록",
+    "• /focusout 집중 근무 종료",
     "• /outside 외근 중",
     "• /manual 시간대를 입력해서 부재 안내",
     "• /edit 날짜별 근무 시간 수정",
@@ -68,7 +69,8 @@ export function buildHelpMessage(): string {
     "회의 중이라 바로 응답이 어려운 상태를 남겨요.",
     "",
     "• /focus",
-    "근무시간에 포함되는 집중 작업 시간을 따로 기록해요. /back 으로 돌아오고, 1시간마다 칭찬 메시지를 보내요.",
+    "근무시간에 포함되는 집중 작업 시간을 따로 기록해요. /back 또는 /focusout 으로 돌아오고, 1시간마다 칭찬 메시지를 보내요.",
+    "집중 근무 시간은 나중에 수정할 수 없으니 꼭 정확하게 기록해 주세요.",
     "",
     "• /outside",
     "외근, 이동, 현장 대응처럼 자리 밖 업무일 때 써요.",
@@ -152,7 +154,9 @@ export function buildPauseMessage(mention: string, status: Exclude<WorkStatus, "
     return `${getStatusEmoji(status)} ${mention} 현재 상태가 이미 <b>${getStatusLabel(status)}</b>이에요.`;
   }
 
-  return `${getStatusEmoji(status)} ${mention} 현재 상태는 <b>${getStatusLabel(status)}</b>이에요. ${statusTone(status)}`;
+  const focusNotice =
+    status === "focus" ? "\n집중 근무 시간은 나중에 수정할 수 없으니 꼭 정확하게 기록해 주세요. /back 또는 /focusout으로 중단할 수 있습니다." : "";
+  return `${getStatusEmoji(status)} ${mention} 현재 상태는 <b>${getStatusLabel(status)}</b>이에요. ${statusTone(status)}${focusNotice}`;
 }
 
 export function buildFocusBlockedMessage(mention: string): string {

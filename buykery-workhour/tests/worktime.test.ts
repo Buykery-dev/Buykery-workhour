@@ -417,6 +417,12 @@ test("pause message uses natural lunch wording", () => {
   assert.doesNotMatch(message, /식사 중로/);
 });
 
+test("focus message warns focus time cannot be edited later", () => {
+  const message = buildPauseMessage("Hanvenue", "focus", "paused");
+  assert.match(message, /나중에 수정할 수 없으니/);
+  assert.match(message, /\/focusout/);
+});
+
 test("/밥 alias switches status to lunch", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
   let restoreCallApi: (() => void) | undefined;
@@ -735,7 +741,7 @@ test("focus praise sweep sends hourly praise and replaces previous message", asy
   }
 });
 
-test("back from focus clears praise message", async () => {
+test("focusout from focus clears praise message", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "buykery-workhour-"));
   let restoreCallApi: (() => void) | undefined;
 
@@ -792,7 +798,7 @@ test("back from focus clears praise message", async () => {
       message: {
         message_id: 41,
         date: Math.floor(new Date("2026-04-20T10:00:00+09:00").getTime() / 1000),
-        text: "/back",
+        text: "/focusout",
         chat: {
           id: 100,
           type: "group",
@@ -804,7 +810,7 @@ test("back from focus clears praise message", async () => {
           first_name: "Han",
           username: "han"
         },
-        entities: [{ type: "bot_command", offset: 0, length: 5 }]
+        entities: [{ type: "bot_command", offset: 0, length: 9 }]
       }
     });
 

@@ -287,6 +287,25 @@ async function handleFocus(ctx: Context, store: FileStateStore): Promise<void> {
   await upsertStatusMessage(ctx, store, current, buildPauseMessage(current.mention, "focus", result.mode === "noop" ? "noop" : "paused"));
 }
 
+async function handleBack(ctx: Context, store: FileStateStore): Promise<void> {
+  const current = getSessionFromContext(ctx, store);
+  if (!current) {
+    return;
+  }
+
+  const now = new Date();
+  const wasFocus = current.session.shift?.currentStatus === "focus";
+  const result = startOrResumeShift(current.session.shift ? trimActiveAwayWindow(current.session.shift, now) : undefined, now);
+  current.session.shift = result.shift;
+  delete current.session.pendingManual;
+  current.session.updatedAt = now.toISOString();
+  if (wasFocus && result.shift.currentStatus !== "focus") {
+    await clearFocusPraiseMessage(ctx, current);
+  }
+
+  await upsertStatusMessage(ctx, store, current, buildStartMessage(current.mention, now, result.mode));
+}
+
 export function createBot(token: string, store: FileStateStore): Telegraf {
   const bot = new Telegraf(token);
 
@@ -322,22 +341,11 @@ export function createBot(token: string, store: FileStateStore): Telegraf {
   });
 
   bot.command("back", async (ctx) => {
-    const current = getSessionFromContext(ctx, store);
-    if (!current) {
-      return;
-    }
+    await handleBack(ctx, store);
+  });
 
-    const now = new Date();
-    const wasFocus = current.session.shift?.currentStatus === "focus";
-    const result = startOrResumeShift(current.session.shift ? trimActiveAwayWindow(current.session.shift, now) : undefined, now);
-    current.session.shift = result.shift;
-    delete current.session.pendingManual;
-    current.session.updatedAt = now.toISOString();
-    if (wasFocus && result.shift.currentStatus !== "focus") {
-      await clearFocusPraiseMessage(ctx, current);
-    }
-
-    await upsertStatusMessage(ctx, store, current, buildStartMessage(current.mention, now, result.mode));
+  bot.command("focusout", async (ctx) => {
+    await handleBack(ctx, store);
   });
 
   bot.command("stop", async (ctx) => {
